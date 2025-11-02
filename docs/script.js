@@ -1,3 +1,4 @@
+
 /* ========= Утилиты ========= */
 const fmt = (n) => (Math.round(n)).toLocaleString('ru-RU');
 const rub = (n) => `${fmt(n)} ₽`;
@@ -446,15 +447,20 @@ function showReportModal(title, fromISO, toISO, s){
   subtitle.textContent = `${title} · отчёт за период`;
 }
 
+
+
+
 /* ========= Render ========= */
 function renderHome(){
   const car = APP.cars.find(c=>c.id===APP.activeCarId);
-  activeCarChip.textContent = 'Авто: ' + (car ? `${c.name} · ${c.cls}` : '—'); // <-- keep original? Fix bug: use car
+  activeCarChip.textContent = 'Авто: ' + (car ? `${car.name} · ${car.cls}` : '—');
+
   const d = new Date(currentDate);
   subtitle.textContent = (currentPeriod==='day')
     ? `Главная · ${d.toLocaleDateString('ru-RU')}`
     : (currentPeriod==='week' ? 'Главная · недели' : 'Главная · месяцы');
 
+  // ====== ДЕНЬ ======
   if(currentPeriod==='day'){
     const x = calcDay(currentDate);
     sumTotal.textContent = rub(x.gross);
@@ -484,6 +490,7 @@ function renderHome(){
     rentPctEl.className='pill ' + (rPct>35?'bad':(rPct>25?'warn':'ok'));
     fuelPctEl.className='pill ' + (fPct>30?'bad':(fPct>20?'warn':'ok'));
 
+    // timeline: показываем соседние дни
     const daysAround = 3;
     const arr = [];
     for(let i = -daysAround; i <= daysAround; i++) arr.push(addDays(currentDate, i));
@@ -500,118 +507,187 @@ function renderHome(){
     return;
   }
 
-  if (currentPeriod === 'week') {
-    const weeks = 8;
-    const arr = [];
-    const today = new Date();
-    const currentMonday = new Date(today);
-    const day = currentMonday.getDay() || 7;
-    if (day !== 1) currentMonday.setDate(currentMonday.getDate() - (day - 1));
-    for (let i = weeks - 1; i >= 0; i--) {
-      const start = new Date(currentMonday);
-      start.setDate(currentMonday.getDate() - i * 7);
-      const end = new Date(start);
-      end.setDate(start.getDate() + 6);
-      const startISO = start.toLocaleDateString('en-CA');
-      const endISO = end.toLocaleDateString('en-CA');
-      const range = [];
-      let cur = new Date(start);
-      while (cur <= end) {
-        range.push(cur.toLocaleDateString('en-CA'));
-        cur.setDate(cur.getDate() + 1);
-      }
-      const sum = sumRange(range);
-      const gross = sum.income + sum.tips + sum.otherIncome;
-      const profit = gross - (sum.rent + sum.fuel + sum.otherExpense + sum.fines + sum.commission + sum.tax);
-      arr.push({
-        label: `${start.toLocaleDateString('ru-RU',{day:'2-digit',month:'2-digit'})}–${end.toLocaleDateString('ru-RU',{day:'2-digit',month:'2-digit'})}`,
-        startISO,endISO,profit
-      });
+ // ====== НЕДЕЛЯ ======
+if (currentPeriod === 'week') {
+  const weeks = 8; // последние 8 календарных недель, включая текущую
+  const arr = [];
+  const today = new Date();
+
+  // Находим понедельник текущей недели (локально)
+  const currentMonday = new Date(today);
+  const day = currentMonday.getDay() || 7; // 1=пн, 7=вс
+  if (day !== 1) currentMonday.setDate(currentMonday.getDate() - (day - 1));
+
+  // Строим последние 8 недель назад
+  for (let i = weeks - 1; i >= 0; i--) {
+    const start = new Date(currentMonday);
+    start.setDate(currentMonday.getDate() - i * 7);
+
+    const end = new Date(start);
+    end.setDate(start.getDate() + 6);
+
+    const startISO = start.toLocaleDateString('en-CA');
+    const endISO = end.toLocaleDateString('en-CA');
+
+    const range = [];
+    let cur = new Date(start);
+    while (cur <= end) {
+      range.push(cur.toLocaleDateString('en-CA'));
+      cur.setDate(cur.getDate() + 1);
     }
-    const vals = arr.map((w) => Math.max(0, w.profit));
-    const labels = arr.map((w) => w.label);
-    const dates = arr.map((w) => w.endISO);
-    renderTimeline(vals, labels, dates);
 
-    const startThisWeek = currentMonday.toLocaleDateString('en-CA');
-    const endThisWeek = new Date(currentMonday); endThisWeek.setDate(currentMonday.getDate() + 6);
-    const rangeThisWeek = []; let cur = new Date(currentMonday);
-    while (cur <= endThisWeek) { rangeThisWeek.push(cur.toLocaleDateString('en-CA')); cur.setDate(cur.getDate() + 1); }
-    const s = sumRange(rangeThisWeek);
-    const gross = s.income + s.tips + s.otherIncome;
-    const profit = gross - (s.rent + s.fuel + s.otherExpense + s.fines + s.commission + s.tax);
-    const eff = gross > 0 ? Math.round((profit / gross) * 100) : 0;
-    const perHour = (s.hours || 0) > 0 ? profit / s.hours : 0;
+    const sum = sumRange(range);
+    const gross = sum.income + sum.tips + sum.otherIncome;
+    const profit =
+      gross -
+      (sum.rent +
+        sum.fuel +
+        sum.otherExpense +
+        sum.fines +
+        sum.commission +
+        sum.tax);
 
-    sumTotal.textContent = rub(gross);
-    ordersLine.textContent = `${fmt(s.orders)} заказов`;
-    cIncome.textContent = rub(s.income);
-    cTips.textContent = rub(s.tips);
-    cOtherIncome.textContent = rub(s.otherIncome);
-    cOrders.textContent = fmt(s.orders);
-    cRent.textContent = rub(s.rent);
-    cFuel.textContent = rub(s.fuel);
-    cOtherExpense.textContent = rub(s.otherExpense);
-    cFines.textContent = rub(s.fines);
-    cCommission.textContent = rub(s.commission);
-    cTax.textContent = rub(s.tax);
-    cProfit.textContent = rub(profit);
-    cEff.textContent = `${eff}%`;
-    cHours.textContent = `${fmt(s.hours || 0)} ч`;
-    cPerHour.textContent = `${fmt(Math.round(perHour))} ₽/ч`;
+    arr.push({
+      label: `${start.toLocaleDateString('ru-RU', {
+        day: '2-digit',
+        month: '2-digit',
+      })}–${end.toLocaleDateString('ru-RU', {
+        day: '2-digit',
+        month: '2-digit',
+      })}`,
+      startISO,
+      endISO,
+      profit,
+    });
   }
 
-  if(currentPeriod==='month'){
-    const months = 6;
-    const arr = [];
-    const now = new Date();
-    for(let i = months - 1; i >= 0; i--){
-      const year = now.getFullYear();
-      const month = now.getMonth() - i;
-      const start = new Date(year, month, 1);
-      const end = new Date(year, month + 1, 0);
-      const startISO = start.toLocaleDateString('en-CA');
-      const endISO = end.toLocaleDateString('en-CA');
-      const range = []; let cur = new Date(start);
-      while(cur <= end){ range.push(cur.toLocaleDateString('en-CA')); cur.setDate(cur.getDate() + 1); }
-      const sum = sumRange(range);
-      const gross = sum.income + sum.tips + sum.otherIncome;
-      const profit = gross - (sum.rent + sum.fuel + sum.otherExpense + sum.fines + sum.commission + sum.tax);
-      arr.push({ label: start.toLocaleString('ru-RU',{month:'short'}), startISO, endISO, profit });
-    }
-    const vals = arr.map(m => Math.max(0, m.profit));
-    const labels = arr.map(m => m.label);
-    const dates = arr.map(m => m.endISO);
-    renderTimeline(vals, labels, dates);
+  const vals = arr.map((w) => Math.max(0, w.profit));
+  const labels = arr.map((w) => w.label);
+  const dates = arr.map((w) => w.endISO);
+  renderTimeline(vals, labels, dates);
 
-    const startThisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-    const endThisMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-    const rangeThisMonth = []; let cur = new Date(startThisMonth);
-    while(cur <= endThisMonth){ rangeThisMonth.push(cur.toLocaleDateString('en-CA')); cur.setDate(cur.getDate() + 1); }
-    const s = sumRange(rangeThisMonth);
-    const gross = s.income + s.tips + s.otherIncome;
-    const profit = gross - (s.rent + s.fuel + s.otherExpense + s.fines + s.commission + s.tax);
-    const eff = gross>0 ? Math.round((profit/gross)*100) : 0;
-    const perHour = (s.hours||0)>0 ? profit / s.hours : 0;
+  // Сводка за текущую календарную неделю (понедельник–воскресенье)
+  const startThisWeek = currentMonday.toLocaleDateString('en-CA');
+  const endThisWeek = new Date(currentMonday);
+  endThisWeek.setDate(currentMonday.getDate() + 6);
 
-    sumTotal.textContent=rub(gross);
-    ordersLine.textContent=`${fmt(s.orders)} заказов`;
-    cIncome.textContent=rub(s.income);
-    cTips.textContent=rub(s.tips);
-    cOtherIncome.textContent=rub(s.otherIncome);
-    cOrders.textContent=fmt(s.orders);
-    cRent.textContent=rub(s.rent);
-    cFuel.textContent=rub(s.fuel);
-    cOtherExpense.textContent=rub(s.otherExpense);
-    cFines.textContent=rub(s.fines);
-    cCommission.textContent=rub(s.commission);
-    cTax.textContent=rub(s.tax);
-    cProfit.textContent=rub(profit);
-    cEff.textContent=`${eff}%`;
-    cHours.textContent=`${fmt(s.hours||0)} ч`;
-    cPerHour.textContent=`${fmt(Math.round(perHour))} ₽/ч`;
+  const rangeThisWeek = [];
+  let cur = new Date(currentMonday);
+  while (cur <= endThisWeek) {
+    rangeThisWeek.push(cur.toLocaleDateString('en-CA'));
+    cur.setDate(cur.getDate() + 1);
   }
+
+  const s = sumRange(rangeThisWeek);
+  const gross = s.income + s.tips + s.otherIncome;
+  const profit =
+    gross -
+    (s.rent +
+      s.fuel +
+      s.otherExpense +
+      s.fines +
+      s.commission +
+      s.tax);
+  const eff = gross > 0 ? Math.round((profit / gross) * 100) : 0;
+  const perHour = (s.hours || 0) > 0 ? profit / s.hours : 0;
+
+  sumTotal.textContent = rub(gross);
+  ordersLine.textContent = `${fmt(s.orders)} заказов`;
+  cIncome.textContent = rub(s.income);
+  cTips.textContent = rub(s.tips);
+  cOtherIncome.textContent = rub(s.otherIncome);
+  cOrders.textContent = fmt(s.orders);
+  cRent.textContent = rub(s.rent);
+  cFuel.textContent = rub(s.fuel);
+  cOtherExpense.textContent = rub(s.otherExpense);
+  cFines.textContent = rub(s.fines);
+  cCommission.textContent = rub(s.commission);
+  cTax.textContent = rub(s.tax);
+  cProfit.textContent = rub(profit);
+  cEff.textContent = `${eff}%`;
+  cHours.textContent = `${fmt(s.hours || 0)} ч`;
+  cPerHour.textContent = `${fmt(Math.round(perHour))} ₽/ч`;
 }
+
+
+
+
+// ====== МЕСЯЦ ======
+if(currentPeriod==='month'){
+  const months = 6; // последние 6 календарных месяцев, включая текущий
+  const arr = [];
+  const now = new Date();
+
+  // Берём последние 6 календарных месяцев
+  for(let i = months - 1; i >= 0; i--){
+    const year = now.getFullYear();
+    const month = now.getMonth() - i;
+    const start = new Date(year, month, 1); // строго с 1-го числа
+    const end = new Date(year, month + 1, 0); // строго по последний день
+    const startISO = start.toLocaleDateString('en-CA'); // YYYY-MM-DD (локально)
+    const endISO = end.toLocaleDateString('en-CA');
+
+    const range = [];
+    let cur = new Date(start);
+    while(cur <= end){
+      range.push(cur.toLocaleDateString('en-CA'));
+      cur.setDate(cur.getDate() + 1);
+    }
+
+    const sum = sumRange(range);
+    const gross = sum.income + sum.tips + sum.otherIncome;
+    const profit = gross - (sum.rent + sum.fuel + sum.otherExpense + sum.fines + sum.commission + sum.tax);
+
+    arr.push({
+      label: start.toLocaleString('ru-RU',{month:'short'}),
+      startISO,
+      endISO,
+      profit
+    });
+  }
+
+  const vals = arr.map(m => Math.max(0, m.profit));
+  const labels = arr.map(m => m.label);
+  const dates = arr.map(m => m.endISO);
+  renderTimeline(vals, labels, dates);
+
+  // Текущий месяц — чисто календарный диапазон
+  const startThisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  const endThisMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  const rangeThisMonth = [];
+  let cur = new Date(startThisMonth);
+  while(cur <= endThisMonth){
+    rangeThisMonth.push(cur.toLocaleDateString('en-CA'));
+    cur.setDate(cur.getDate() + 1);
+  }
+
+  const s = sumRange(rangeThisMonth);
+  const gross = s.income + s.tips + s.otherIncome;
+  const profit = gross - (s.rent + s.fuel + s.otherExpense + s.fines + s.commission + s.tax);
+  const eff = gross>0 ? Math.round((profit/gross)*100) : 0;
+  const perHour = (s.hours||0)>0 ? profit / s.hours : 0;
+
+  sumTotal.textContent=rub(gross);
+  ordersLine.textContent=`${fmt(s.orders)} заказов`;
+  cIncome.textContent=rub(s.income);
+  cTips.textContent=rub(s.tips);
+  cOtherIncome.textContent=rub(s.otherIncome);
+  cOrders.textContent=fmt(s.orders);
+  cRent.textContent=rub(s.rent);
+  cFuel.textContent=rub(s.fuel);
+  cOtherExpense.textContent=rub(s.otherExpense);
+  cFines.textContent=rub(s.fines);
+  cCommission.textContent=rub(s.commission);
+  cTax.textContent=rub(s.tax);
+  cProfit.textContent=rub(profit);
+  cEff.textContent=`${eff}%`;
+  cHours.textContent=`${fmt(s.hours||0)} ч`;
+  cPerHour.textContent=`${fmt(Math.round(perHour))} ₽/ч`;
+}
+
+}
+
+
 
 /* ===== Reports ===== */
 const rTabs=document.querySelectorAll('.r-tab');
@@ -650,6 +726,7 @@ function buildSummaryCard(title, s){
 function renderReports(){
   reportsBody.innerHTML='';
   if(rMode==='classes'){
+    // агрегируем по классам (только где есть данные)
     const map = {};
     for(const car of APP.cars){
       const data = APP.dataByCar[car.id]||{};
@@ -698,16 +775,19 @@ function render(){
 }
 
 /* ========= Events ========= */
+// tabs
 tabs.forEach(t=>t.addEventListener('click',()=>{
   tabs.forEach(x=>x.classList.remove('active'));
   t.classList.add('active');
   currentPeriod=t.dataset.period;
   render();
 }));
+// nav
 navbtns.forEach(n=>n.addEventListener('click',()=>{
   currentScreen=n.dataset.screen;
   render();
 }));
+// date
 dateInput.addEventListener('change', (e)=>{
   currentDate = e.target.value || todayISO();
   ensureDay(currentDate);
@@ -717,6 +797,7 @@ dateInput.addEventListener('change', (e)=>{
   currentPeriod='day';
   render();
 });
+// editable cards
 document.querySelectorAll('.card[data-edit]').forEach(c=>{
   c.addEventListener('click', ()=>{
     if(currentPeriod!=='day'){
@@ -733,6 +814,7 @@ document.querySelectorAll('.card[data-edit]').forEach(c=>{
     openModal(field, titles[field]||'Изменить');
   });
 });
+// reports tabs
 rTabs.forEach(rt=>rt.addEventListener('click',()=>{
   rTabs.forEach(x=>x.classList.remove('active'));
   rt.classList.add('active');
@@ -741,47 +823,50 @@ rTabs.forEach(rt=>rt.addEventListener('click',()=>{
 }));
 
 /* ========= First render ========= */
-rangeBtn.onclick = () => {
-  const from = fromDate.value, to = toDate.value;
-  if (!from || !to) { alert('Укажите обе даты'); return; }
-  if (from > to) { alert('Дата начала позже даты окончания'); return; }
+ // ===== Отчёт по диапазону =====
+ rangeBtn.onclick = () => {
+   const from = fromDate.value, to = toDate.value;
+   if (!from || !to) { alert('Укажите обе даты'); return; }
+   if (from > to) { alert('Дата начала позже даты окончания'); return; }
 
-  const arr = []; let cur = new Date(from); const end = new Date(to);
-  while (cur <= end) { arr.push(cur.toLocaleDateString('en-CA')); cur.setDate(cur.getDate() + 1); }
+   const arr = []; let cur = new Date(from); const end = new Date(to);
+   while (cur <= end) { arr.push(cur.toLocaleDateString('en-CA')); cur.setDate(cur.getDate() + 1); }
 
-  const s = sumRange(arr);
-  const gross = s.income + s.tips + s.otherIncome;
-  const profit = gross - (s.rent + s.fuel + s.otherExpense + s.fines + s.commission + s.tax);
+   const s = sumRange(arr);
+   const gross = s.income + s.tips + s.otherIncome;
+   const profit = gross - (s.rent + s.fuel + s.otherExpense + s.fines + s.commission + s.tax);
 
-  reportsBody.innerHTML = `
-    <div style="margin-bottom:10px;font-size:13px;color:var(--muted);text-align:center;">
-      📅 Период: ${isoToShort(from)} — ${isoToShort(to)}
-    </div>
-    ${buildSummaryCard('Отчёт по диапазону', s)}
-  `;
-};
+   reportsBody.innerHTML = `
+     <div style="margin-bottom:10px;font-size:13px;color:var(--muted);text-align:center;">
+       📅 Период: ${isoToShort(from)} — ${isoToShort(to)}
+     </div>
+     ${buildSummaryCard('Отчёт по диапазону', s)}
+   `;
+ };
 
-render();
+ // Первый рендер
+ render();
 
-// ==== Telegram Mini App init (устойчивый вариант) ====
-(function initTelegram() {
-  try {
-    if (window.Telegram && Telegram.WebApp) {
-      Telegram.WebApp.ready();
-      Telegram.WebApp.expand();
-      if (Telegram.WebApp.disableVerticalSwipes) {
-        Telegram.WebApp.disableVerticalSwipes();
-      }
-      if (Telegram.WebApp.enableClosingConfirmation) {
-        Telegram.WebApp.enableClosingConfirmation();
-      } else {
-        Telegram.WebApp.isClosingConfirmationEnabled = true;
-      }
-      console.log('[TaxiPro] Telegram WebApp initialized');
-    } else {
-      console.warn('[TaxiPro] Telegram WebApp не обнаружен');
-    }
-  } catch (e) {
-    console.error('[TaxiPro] Telegram init error:', e);
-  }
-})();
+ // ==== Telegram Mini App init (устойчивый вариант) ====
+ (function initTelegram() {
+   try {
+     if (window.Telegram && Telegram.WebApp) {
+       Telegram.WebApp.ready();
+       Telegram.WebApp.expand();
+       if (Telegram.WebApp.disableVerticalSwipes) {
+         Telegram.WebApp.disableVerticalSwipes();
+       }
+       // Совместимость старого/нового API подтверждения закрытия
+       if (Telegram.WebApp.enableClosingConfirmation) {
+         Telegram.WebApp.enableClosingConfirmation();
+       } else {
+         Telegram.WebApp.isClosingConfirmationEnabled = true;
+       }
+       console.log('[TaxiPro] Telegram WebApp initialized');
+     } else {
+       console.warn('[TaxiPro] Telegram WebApp не обнаружен');
+     }
+   } catch (e) {
+     console.error('[TaxiPro] Telegram init error:', e);
+   }
+ })();

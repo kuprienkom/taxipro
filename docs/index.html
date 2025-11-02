@@ -1,195 +1,177 @@
 <!DOCTYPE html>
+
 <html lang="ru">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>TaxiPro — Анализатор Такси</title>
-  <link rel="manifest" href="manifest.json">
-  <link rel="stylesheet" href="style.css">
-  <script defer src="script.js"></script>
-</head>
+<meta charset="utf-8"/>
+<meta content="width=device-width,initial-scale=1" name="viewport"/>
+<title>Такси Анализатор</title>
+<link href="manifest.json" rel="manifest"/><link href="style.css" rel="stylesheet"/>
+
+<script defer="defer" src="script.js"></script></head>
 <body>
 <div class="app">
-  <div class="appbar">
-    <div class="logo"></div>
-    <div class="title">
-      <b>Такси Анализатор</b>
-      <span id="subtitle">Главная · сегодня</span>
-    </div>
-    <div class="right">
-      <div id="activeCarChip" class="car-chip">Авто: —</div>
-    </div>
-  </div>
-
-  <div class="content">
-    <!-- HOME -->
-    <div id="screen-home">
-      <div class="top-controls">
-        <div class="tabs" id="tabs">
-          <div class="tab active" data-period="day">День</div>
-          <div class="tab" data-period="week">Неделя</div>
-          <div class="tab" data-period="month">Месяц</div>
-        </div>
-        <input id="dateInput" type="date">
-      </div>
-
-      <div class="stats">
-        <h1 id="sumTotal">0 ₽</h1>
-        <p id="ordersLine">0 заказов</p>
-      </div>
-
-      <div class="group-title">💰 Доходы</div>
-      <div class="cards">
-        <div class="card" data-edit="income"><h3 id="cIncome">0 ₽</h3><p>Доход</p></div>
-        <div class="card" data-edit="tips"><h3 id="cTips">0 ₽</h3><p>Чаевые</p></div>
-        <div class="card" data-edit="otherIncome"><h3 id="cOtherIncome">0 ₽</h3><p>Прочие доходы</p></div>
-        <div class="card" data-edit="orders"><h3 id="cOrders">0</h3><p>Заказы</p></div>
-      </div>
-
-      <div class="group-title">💸 Расходы</div>
-      <div class="cards">
-        <div class="card" data-edit="rent"><h3 id="cRent">0 ₽</h3><p>Аренда</p></div>
-        <div class="card" data-edit="fuel"><h3 id="cFuel">0 ₽</h3><p>Топливо</p></div>
-        <div class="card" data-edit="otherExpense"><h3 id="cOtherExpense">0 ₽</h3><p>Прочие расходы</p></div>
-        <div class="card" data-edit="fines"><h3 id="cFines">0 ₽</h3><p>Штрафы</p></div>
-      </div>
-
-      <div class="group-title">⏱ Время</div>
-      <div class="cards">
-        <div class="card" data-edit="hours"><h3 id="cHours">0 ч</h3><p>Часы за смену</p></div>
-        <div class="card readonly"><h3 id="cPerHour">0 ₽/ч</h3><p>Заработок в час</p></div>
-      </div>
-
-      <div class="group-title">📊 Итого</div>
-      <div class="cards">
-        <div class="card readonly"><h3 id="cCommission">0 ₽</h3><p>Комиссия парка</p></div>
-        <div class="card readonly"><h3 id="cTax">0 ₽</h3><p>Налог</p></div>
-        <div class="card readonly"><h3 id="cProfit">0 ₽</h3><p>Чистая прибыль</p></div>
-        <div class="card readonly"><h3 id="cEff">0%</h3><p>Эффективность</p></div>
-      </div>
-
-      <div class="chart-wrap">
-        <div class="chart" id="chartBars"></div>
-      </div>
-      <div class="hint">Диаграмма: над столбцом — прибыль, под столбцом — дата периода</div>
-
-      <div class="section">Индикаторы</div>
-      <div class="list">
-        <div class="row"><div>Доля аренды</div><span id="rentPct" class="pill warn">0%</span></div>
-        <div class="row"><div>Доля топлива</div><span id="fuelPct" class="pill ok">0%</span></div>
-      </div>
-
-      <footer>🚕 Такси Анализатор v1.3 beta</footer>
-    </div>
-
-    <!-- REPORTS -->
-    <div id="screen-reports" class="hidden">
-      <div class="r-tabs">
-        <div class="r-tab active" data-r="week">Неделя</div>
-        <div class="r-tab" data-r="month">Месяц</div>
-        <div class="r-tab" data-r="classes">Классы</div>
-      </div>
-
-      <div class="r-range">
-        <label>Период:</label>
-        <input id="fromDate" type="date">
-        <span style="color:var(--muted)">—</span>
-        <input id="toDate" type="date">
-        <button id="rangeBtn" class="mini primary">Посчитать</button>
-      </div>
-
-      <div id="reportsBody"></div>
-      <footer>Нажимай на блоки, чтобы раскрыть детали</footer>
-    </div>
-
-    <!-- SETTINGS -->
-    <div id="screen-settings" class="hidden">
-      <div class="section">Автомобили</div>
-      <div class="list">
-        <div class="row">
-          <div class="inline">
-            <input id="carName" placeholder="Название авто (напр. Solaris)" style="padding:8px;border-radius:10px;border:1px solid rgba(255,255,255,.1);background:#0f0f10;color:#fff">
-            <div class="inline" id="classButtons">
-              <button class="mini" data-cls="Эконом">Эконом</button>
-              <button class="mini" data-cls="Комфорт">Комфорт</button>
-              <button class="mini" data-cls="Комфорт+">Комфорт+</button>
-              <button class="mini" data-cls="Бизнес">Бизнес</button>
-            </div>
-          </div>
-          <button id="addCarBtn" class="mini primary">Добавить</button>
-        </div>
-        <div id="carsContainer" class="car-list"></div>
-      </div>
-
-      <div class="section">Система комиссий парка</div>
-      <div class="list">
-        <div class="row"><label class="radio"><input type="radio" name="park" value="none"> <span>Без парка / Без комиссии</span></label></div>
-        <div class="row"><label class="radio"><input type="radio" name="park" value="150day"> <span>150 ₽ за рабочие сутки</span></label></div>
-        <div class="row"><label class="radio"><input type="radio" name="park" value="15order"> <span>15 ₽ с заказа (регионы)</span></label></div>
-        <div class="row"><label class="radio"><input type="radio" name="park" value="20order"> <span>20 ₽ с заказа (МСК/СПб)</span></label></div>
-        <div class="row"><label class="radio"><input type="radio" name="park" value="4pct"> <span>4% с дохода</span></label></div>
-      </div>
-
-      <div class="section">Налогообложение</div>
-      <div class="list">
-        <div class="row"><label class="radio"><input type="radio" name="tax" value="none"> <span>Без налога</span></label></div>
-        <div class="row"><label class="radio"><input type="radio" name="tax" value="self4"> <span>Самозанятый 4%</span></label></div>
-        <div class="row"><label class="radio"><input type="radio" name="tax" value="ip6"> <span>ИП 6%</span></label></div>
-      </div>
-
-      <div class="section">Прочее</div>
-      <div class="list">
-        <div class="row">
-          <div>Сброс данных</div>
-          <button id="resetBtn" class="mini">Очистить</button>
-        </div>
-      </div>
-
-      <footer>Данные хранятся локально (localStorage)</footer>
-    </div>
-  </div>
-
-  <div class="nav">
-    <div class="navbtn active" data-screen="home">🏠 Главная</div>
-    <div class="navbtn" data-screen="reports">📊 Отчёты</div>
-    <div class="navbtn" data-screen="settings">⚙️ Настройки</div>
-  </div>
+<div class="appbar">
+<div class="logo"></div>
+<div class="title">
+<b>Такси Анализатор</b>
+<span id="subtitle">Главная · сегодня</span>
 </div>
-
+<div class="right">
+<div class="car-chip" id="activeCarChip">Авто: —</div>
+</div>
+</div>
+<div class="content">
+<!-- HOME -->
+<div id="screen-home">
+<div class="top-controls">
+<div class="tabs" id="tabs">
+<div class="tab active" data-period="day">День</div>
+<div class="tab" data-period="week">Неделя</div>
+<div class="tab" data-period="month">Месяц</div>
+</div>
+<input id="dateInput" type="date"/>
+</div>
+<div class="stats">
+<h1 id="sumTotal">0 ₽</h1>
+<p id="ordersLine">0 заказов</p>
+</div>
+<div class="group-title">💰 Доходы</div>
+<div class="cards">
+<div class="card" data-edit="income"><h3 id="cIncome">0 ₽</h3><p>Доход</p></div>
+<div class="card" data-edit="tips"><h3 id="cTips">0 ₽</h3><p>Чаевые</p></div>
+<div class="card" data-edit="otherIncome"><h3 id="cOtherIncome">0 ₽</h3><p>Прочие доходы</p></div>
+<div class="card" data-edit="orders"><h3 id="cOrders">0</h3><p>Заказы</p></div>
+</div>
+<div class="group-title">💸 Расходы</div>
+<div class="cards">
+<div class="card" data-edit="rent"><h3 id="cRent">0 ₽</h3><p>Аренда</p></div>
+<div class="card" data-edit="fuel"><h3 id="cFuel">0 ₽</h3><p>Топливо</p></div>
+<div class="card" data-edit="otherExpense"><h3 id="cOtherExpense">0 ₽</h3><p>Прочие расходы</p></div>
+<div class="card" data-edit="fines"><h3 id="cFines">0 ₽</h3><p>Штрафы</p></div>
+</div>
+<div class="group-title">⏱ Время</div>
+<div class="cards">
+<div class="card" data-edit="hours"><h3 id="cHours">0 ч</h3><p>Часы за смену</p></div>
+<div class="card readonly"><h3 id="cPerHour">0 ₽/ч</h3><p>Заработок в час</p></div>
+</div>
+<div class="group-title">📊 Итого</div>
+<div class="cards">
+<div class="card readonly"><h3 id="cCommission">0 ₽</h3><p>Комиссия парка</p></div>
+<div class="card readonly"><h3 id="cTax">0 ₽</h3><p>Налог</p></div>
+<div class="card readonly"><h3 id="cProfit">0 ₽</h3><p>Чистая прибыль</p></div>
+<div class="card readonly"><h3 id="cEff">0%</h3><p>Эффективность</p></div>
+</div>
+<div class="chart-wrap">
+<div class="chart" id="chartBars"></div>
+</div>
+<div class="hint">Диаграмма: над столбцом — прибыль, под столбцом — дата периода</div>
+<div class="section">Индикаторы</div>
+<div class="list">
+<div class="row"><div>Доля аренды</div><span class="pill warn" id="rentPct">0%</span></div>
+<div class="row"><div>Доля топлива</div><span class="pill ok" id="fuelPct">0%</span></div>
+</div>
+<footer>🚕 Такси Анализатор v1.3 beta</footer>
+</div>
+<!-- REPORTS -->
+<div class="hidden" id="screen-reports">
+<div class="r-tabs">
+<div class="r-tab active" data-r="week">Неделя</div>
+<div class="r-tab" data-r="month">Месяц</div>
+<div class="r-tab" data-r="classes">Классы</div>
+</div>
+<!-- Новый блок выбора диапазона -->
+<div class="r-range">
+<label>Период:</label>
+<input id="fromDate" type="date"/>
+<span style="color:var(--muted)">—</span>
+<input id="toDate" type="date"/>
+<button class="mini primary" id="rangeBtn">Посчитать</button>
+</div>
+<div id="reportsBody"></div>
+<footer>Нажимай на блоки, чтобы раскрыть детали</footer>
+</div>
+<!-- SETTINGS -->
+<div class="hidden" id="screen-settings">
+<div class="section">Автомобили</div>
+<div class="list">
+<div class="row">
+<div class="inline">
+<input id="carName" placeholder="Название авто (напр. Solaris)" style="padding:8px;border-radius:10px;border:1px solid rgba(255,255,255,.1);background:#0f0f10;color:#fff"/>
+<div class="inline" id="classButtons">
+<button class="mini" data-cls="Эконом">Эконом</button>
+<button class="mini" data-cls="Комфорт">Комфорт</button>
+<button class="mini" data-cls="Комфорт+">Комфорт+</button>
+<button class="mini" data-cls="Бизнес">Бизнес</button>
+</div>
+</div>
+<button class="mini primary" id="addCarBtn">Добавить</button>
+</div>
+<div class="car-list" id="carsContainer"></div>
+</div>
+<div class="section">Система комиссий парка</div>
+<div class="list">
+<div class="row"><label class="radio"><input name="park" type="radio" value="none"/> <span>Без парка / Без комиссии</span></label></div>
+<div class="row"><label class="radio"><input name="park" type="radio" value="150day"/> <span>150 ₽ за рабочие сутки</span></label></div>
+<div class="row"><label class="radio"><input name="park" type="radio" value="15order"/> <span>15 ₽ с заказа (регионы)</span></label></div>
+<div class="row"><label class="radio"><input name="park" type="radio" value="20order"/> <span>20 ₽ с заказа (МСК/СПб)</span></label></div>
+<div class="row"><label class="radio"><input name="park" type="radio" value="4pct"/> <span>4% с дохода</span></label></div>
+</div>
+<div class="section">Налогообложение</div>
+<div class="list">
+<div class="row"><label class="radio"><input name="tax" type="radio" value="none"/> <span>Без налога</span></label></div>
+<div class="row"><label class="radio"><input name="tax" type="radio" value="self4"/> <span>Самозанятый 4%</span></label></div>
+<div class="row"><label class="radio"><input name="tax" type="radio" value="ip6"/> <span>ИП 6%</span></label></div>
+</div>
+<div class="section">Прочее</div>
+<div class="list">
+<div class="row">
+<div>Сброс данных</div>
+<button class="mini" id="resetBtn">Очистить</button>
+</div>
+</div>
+<footer>Данные хранятся локально (localStorage)</footer>
+</div>
+</div>
+<div class="nav">
+<div class="navbtn active" data-screen="home">🏠 Главная</div>
+<div class="navbtn" data-screen="reports">📊 Отчёты</div>
+<div class="navbtn" data-screen="settings">⚙️ Настройки</div>
+</div>
+</div>
 <!-- MODALS -->
 <div class="modal-bg" id="modalBg">
-  <div class="modal">
-    <header><b id="modalTitle">Изменить</b></header>
-    <div class="body">
-      <label id="modalLabel">Введите значение</label>
-      <input id="modalInput" type="number" step="1" min="0" placeholder="0">
-      <div id="quickArea" class="quick"></div>
-    </div>
-    <div class="actions">
-      <button class="btn ghost" id="btnCancel">Отмена</button>
-      <button class="btn primary" id="btnSave">Сохранить</button>
-    </div>
-  </div>
+<div class="modal">
+<header><b id="modalTitle">Изменить</b></header>
+<div class="body">
+<label id="modalLabel">Введите значение</label>
+<input id="modalInput" min="0" placeholder="0" step="1" type="number"/>
+<div class="quick" id="quickArea"></div>
+</div>
+<div class="actions">
+<button class="btn ghost" id="btnCancel">Отмена</button>
+<button class="btn primary" id="btnSave">Сохранить</button>
+</div>
+</div>
+</div>
+<div class="modal-bg" id="carEditBg">
+<div class="modal">
+<header><b>Настройки авто</b></header>
+<div class="body">
+<label>Название</label>
+<input id="carEditName" placeholder="Например, Solaris"/>
+<label>Класс</label>
+<select id="carEditClass">
+<option>Эконом</option><option>Комфорт</option><option>Комфорт+</option><option>Бизнес</option>
+</select>
+<label>Объём бака (л)</label>
+<input id="carEditTank" max="120" min="20" placeholder="50" step="1" type="number"/>
+</div>
+<div class="actions">
+<button class="btn ghost" id="carEditCancel">Отмена</button>
+<button class="btn primary" id="carEditSave">Сохранить</button>
+</div>
+</div>
 </div>
 
-<div class="modal-bg" id="carEditBg">
-  <div class="modal">
-    <header><b>Настройки авто</b></header>
-    <div class="body">
-      <label>Название</label>
-      <input id="carEditName" placeholder="Например, Solaris">
-      <label>Класс</label>
-      <select id="carEditClass">
-        <option>Эконом</option><option>Комфорт</option><option>Комфорт+</option><option>Бизнес</option>
-      </select>
-      <label>Объём бака (л)</label>
-      <input id="carEditTank" type="number" min="20" max="120" step="1" placeholder="50">
-    </div>
-    <div class="actions">
-      <button class="btn ghost" id="carEditCancel">Отмена</button>
-      <button class="btn primary" id="carEditSave">Сохранить</button>
-    </div>
-  </div>
-</div>
 </body>
 </html>
