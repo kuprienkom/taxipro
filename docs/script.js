@@ -6,15 +6,57 @@ const addDays = (iso,delta)=>{const d=new Date(iso);d.setDate(d.getDate()+delta)
 const rangeDays=(end,count)=>{const a=[];for(let i=count-1;i>=0;i--)a.push(addDays(end,-i));return a;}
 const isoToShort = (iso)=>{const d=new Date(iso);return d.toLocaleDateString('ru-RU',{day:'2-digit',month:'2-digit'});}
 
-/* ========= Connectivity beacon (tg detection) ========= */
-(() => {
-  const tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
-  const from = tg ? 'tg-ok' : 'no-tg';
-  const v = 'auth-check1';
+/* ========= Telegram detection + auth (robust) ========= */
+const API_BASE = 'https://taxipro-api.onrender.com';
+
+async function apiPost(path, body) {
   try {
-    fetch(`https://taxipro-api.onrender.com/api/ping-test?from=${from}&v=${v}`).catch(() => {});
-  } catch (e) {}
+    const r = await fetch(API_BASE + path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {})
+    });
+    return await r.json();
+  } catch (e) { console.warn('[TaxiPro] API error', e); return null; }
+}
+
+// Ждём появления Telegram.WebApp (до 5 сек) и только потом авторизуемся
+(function waitForTelegramAndAuth() {
+  const startedAt = Date.now();
+
+  function tryInit() {
+    const tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
+
+    if (!tg) {
+      if (Date.now() - startedAt < 5000) {
+        return setTimeout(tryInit, 100); // подождать ещё
+      } else {
+        // Отладочный маяк: Telegram не появился
+        fetch(`${API_BASE}/api/ping-test?from=no-tg&v=auth-wait5s`).catch(()=>{});
+        console.log('[TaxiPro] Telegram.WebApp не найден — страница, вероятно, не в Mini App');
+        return;
+      }
+    }
+
+    // Отладочный маяк: Telegram найден
+    fetch(`${API_BASE}/api/ping-test?from=tg-ok&v=auth-wait5s`).catch(()=>{});
+
+    try { tg.ready(); tg.expand && tg.expand(); } catch {}
+
+    // 1) апсерт пользователя
+    apiPost('/api/auth/telegram', { initData: tg.initData });
+
+    // 2) хартбит активности
+    setInterval(() => {
+      apiPost('/api/ping', { initData: tg.initData, screen: 'app' });
+    }, 30_000);
+  }
+
+  // Запускаем сразу и на DOMContentLoaded на всякий случай
+  tryInit();
+  document.addEventListener('DOMContentLoaded', tryInit, { once: true });
 })();
+
 
 /* ========= Storage schema =========
 {
