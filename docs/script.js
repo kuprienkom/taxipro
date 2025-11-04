@@ -21,6 +21,8 @@ const isoToShort = (iso)=>{const d=new Date(iso);return d.toLocaleDateString('ru
 }
 ==================================== */
 const LS_KEY = 'taxiAnalyzerV13';
+const FIRST_LAUNCH_RESET_KEY = `${LS_KEY}::firstLaunchResetDone`;
+let firstLaunchResetPerformed = false;
 
 function createEmptyApp() {
   return {
@@ -99,8 +101,13 @@ function createDemoApp() {
 
 function loadAll() {
   const raw = localStorage.getItem(LS_KEY);
-  if (raw) return JSON.parse(raw);
-  return createEmptyApp();
+  if (!raw) return createEmptyApp();
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    console.warn('[TaxiPro] Не удалось прочитать сохранённое состояние, выполняем сброс.', err);
+    return createEmptyApp();
+  }
 }
 
 function saveAll() {
@@ -264,8 +271,21 @@ function currentSettingsSnapshot(){
 }
 
 
+const storedResetMarker = localStorage.getItem(FIRST_LAUNCH_RESET_KEY);
+let initialAppState;
+if (storedResetMarker === 'done') {
+  initialAppState = loadAll();
+} else {
+  firstLaunchResetPerformed = true;
+  initialAppState = createEmptyApp();
+  localStorage.setItem(FIRST_LAUNCH_RESET_KEY, 'done');
+}
+
 /* ========= State ========= */
-let APP = normalizeApp(loadAll());
+let APP = normalizeApp(initialAppState);
+if (firstLaunchResetPerformed) {
+  saveAll();
+}
 
 let currentScreen='home';
 let currentPeriod='day';
@@ -341,6 +361,9 @@ const reportsBody=document.getElementById('reportsBody');
 const parkDayInput = document.getElementById('parkDayValue');
 const parkOrderInput = document.getElementById('parkOrderValue');
 const parkPercentInput = document.getElementById('parkPercentValue');
+const fromDateInput = document.getElementById('fromDate');
+const toDateInput = document.getElementById('toDate');
+const rangeBtn = document.getElementById('rangeBtn');
 
 const toastEl = document.getElementById('toast');
 let toastTimer = null;
@@ -792,6 +815,23 @@ if(defaultClassBtn) defaultClassBtn.classList.add('primary');
 const addCarBtn=document.getElementById('addCarBtn');
 const carsContainer=document.getElementById('carsContainer');
 
+function resetUiInputs(){
+  if (carName) carName.value='';
+  if (carRentInput) carRentInput.value='';
+  if (carTankInput) carTankInput.value='';
+  if (fromDateInput) fromDateInput.value='';
+  if (toDateInput) toDateInput.value='';
+  newCarClass='Эконом';
+  if (classButtons) {
+    classButtons.querySelectorAll('button').forEach(x=>x.classList.remove('primary'));
+  }
+  if (defaultClassBtn) defaultClassBtn.classList.add('primary');
+}
+
+if (firstLaunchResetPerformed) {
+  resetUiInputs();
+}
+
 function renderCars(){
   const items = APP.cars.map(c=>`
     <div class="car-item">
@@ -845,6 +885,19 @@ addCarBtn.onclick=()=>{
   saveAll(); render();
   showToast('Авто добавлено.');
 };
+
+function performAppReset(options = {}) {
+  const { silent = false } = options;
+  APP = normalizeApp(createEmptyApp());
+  saveAll();
+  currentPeriod = 'day';
+  jumpToLatestDate();
+  resetUiInputs();
+  render();
+  if (!silent) {
+    showToast('Данные очищены.');
+  }
+}
 
 /* ========= Settings (commission & tax) ========= */
 function bindSettingsRadios(){
@@ -929,12 +982,7 @@ function bindSettingsRadios(){
     resetBtn.onclick = async () => {
       const ok = await showConfirm('Сбросить все локальные данные? Все данные будут безвозвратно удалены.', { okLabel: 'Очистить' });
       if (!ok) return;
-      APP = normalizeApp(createEmptyApp());
-      saveAll();
-      currentPeriod = 'day';
-      jumpToLatestDate();
-      render();
-      showToast('Данные очищены.');
+      performAppReset();
     };
   }
 
@@ -947,6 +995,7 @@ function bindSettingsRadios(){
       saveAll();
       currentPeriod = 'day';
       jumpToLatestDate();
+      resetUiInputs();
       render();
       showToast('Демо-режим активирован.');
     };
@@ -1540,25 +1589,30 @@ rTabs.forEach(rt=>rt.addEventListener('click',()=>{
 
 /* ========= First render ========= */
  // ===== Отчёт по диапазону =====
- rangeBtn.onclick = () => {
-   const from = fromDate.value, to = toDate.value;
-   if (!from || !to) { showToast('Укажите обе даты.'); return; }
-   if (from > to) { showToast('Дата начала позже даты окончания.'); return; }
+if (rangeBtn) {
+  rangeBtn.onclick = () => {
+    const from = fromDateInput ? fromDateInput.value : '';
+    const to = toDateInput ? toDateInput.value : '';
+    if (!from || !to) { showToast('Укажите обе даты.'); return; }
+    if (from > to) { showToast('Дата начала позже даты окончания.'); return; }
 
-   const arr = []; let cur = new Date(from); const end = new Date(to);
-   while (cur <= end) { arr.push(cur.toLocaleDateString('en-CA')); cur.setDate(cur.getDate() + 1); }
+    const arr = [];
+    let cur = new Date(from);
+    const end = new Date(to);
+    while (cur <= end) {
+      arr.push(cur.toLocaleDateString('en-CA'));
+      cur.setDate(cur.getDate() + 1);
+    }
 
-   const s = sumRange(arr);
-   const gross = s.income + s.tips + s.otherIncome;
-   const profit = gross - (s.rent + s.fuel + s.otherExpense + s.fines + s.commission + s.tax);
-
-   reportsBody.innerHTML = `
-     <div style="margin-bottom:10px;font-size:13px;color:var(--muted);text-align:center;">
-       📅 Период: ${isoToShort(from)} — ${isoToShort(to)}
-     </div>
-     ${buildSummaryCard('Отчёт по диапазону', s)}
-   `;
- };
+    const s = sumRange(arr);
+    reportsBody.innerHTML = `
+      <div style="margin-bottom:10px;font-size:13px;color:var(--muted);text-align:center;">
+        📅 Период: ${isoToShort(from)} — ${isoToShort(to)}
+      </div>
+      ${buildSummaryCard('Отчёт по диапазону', s)}
+    `;
+  };
+}
 
  // Первый рендер
  render();
