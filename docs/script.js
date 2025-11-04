@@ -1,4 +1,3 @@
-
 /* ========= Утилиты ========= */
 const fmt = (n) => (Math.round(n)).toLocaleString('ru-RU');
 const rub = (n) => `${fmt(n)} ₽`;
@@ -198,9 +197,6 @@ function sanitizeRentPerDay(value, fallback = 0) {
   return safeMoney(source);
 }
 
-
-
-
 function normalizeApp(app){
   app = app || {};
   app.settings = app.settings || {};
@@ -260,7 +256,6 @@ function normalizeApp(app){
   return app;
 }
 
-
 function currentSettingsSnapshot(){
   const car = APP.cars.find(c => c.id === APP.activeCarId);
   return {
@@ -269,7 +264,6 @@ function currentSettingsSnapshot(){
     rentPerDay: sanitizeRentPerDay(car && car.rentPerDay)
   };
 }
-
 
 const storedResetMarker = localStorage.getItem(FIRST_LAUNCH_RESET_KEY);
 let initialAppState;
@@ -631,6 +625,8 @@ function openDayModal(field, title){
       applyAutoRent(day);
       saveAll();
       render();
+      // === ДОБАВЛЕНО: синхронизация смены в облако ===
+      syncShiftToCloud(currentDate);
     }
   });
 }
@@ -699,8 +695,6 @@ function attachModalInput(input, getContext){
           touchSession.triggered = true;
           triggerModal(ev);
         }
-        // keep the session for the ensuing click event so it can acknowledge the trigger
-        // and avoid reopening; it will be cleared in the click handler.
         return;
       }
       triggerModal(ev);
@@ -1108,6 +1102,37 @@ function jumpToLatestDate() {
   }
 }
 
+/* ========= ДОБАВЛЕНО: отправка смены в облако ========= */
+function syncShiftToCloud(dateISO) {
+  try {
+    const userId = localStorage.getItem('userId');
+    if (!userId) return;
+    const d = calcDay(dateISO);
+    const payload = {
+      userId: Number(userId),
+      date: dateISO,
+      income: Number(d.income || 0),
+      tipsExtra: Number(d.tips || 0),
+      rent: Number(d.rent || 0),
+      fuel: Number(d.fuel || 0),
+      other: Number(d.otherExpense || 0),
+      fines: Number(d.fines || 0),
+      hours: Number(d.hours || 0),
+      profit: Number(d.profit || 0)
+    };
+    fetch('https://taxipro-api.onrender.com/api/shifts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+      .then(r => r.json())
+      .then(() => console.log('☁️ Смена сохранена в облаке', payload))
+      .catch(console.error);
+  } catch (e) {
+    console.error('Cloud sync error:', e);
+  }
+}
+
 /* ========= Timeline chart ========= */
 function renderTimeline(values, labels, dates){
   chartBars.innerHTML='';
@@ -1127,7 +1152,6 @@ function renderTimeline(values, labels, dates){
     // === обработка кликов по столбцам ===
     bar.onclick = () => {
       if (currentPeriod === 'day') {
-        // как раньше — просто открыть день
         currentDate = dates[i];
         currentPeriod = 'day';
         tabs.forEach(x => x.classList.remove('active'));
@@ -1136,14 +1160,12 @@ function renderTimeline(values, labels, dates){
         render();
       } 
       else if (currentPeriod === 'week') {
-        // перейти к отчёту за неделю
         const endISO = dates[i];
         const range = rangeDays(endISO, 7);
         const summary = sumRange(range);
         showReportModal('Неделя', range[0], range[6], summary);
       } 
       else if (currentPeriod === 'month') {
-        // перейти к отчёту за месяц
         const endISO = dates[i];
         const startISO = addDays(endISO, -29);
         const range = rangeDays(endISO, 30);
@@ -1202,9 +1224,6 @@ function showReportModal(title, fromISO, toISO, s){
   subtitle.textContent = `${title} · отчёт за период`;
 }
 
-
-
-
 /* ========= Render ========= */
 function renderHome(){
   const car = APP.cars.find(c=>c.id===APP.activeCarId);
@@ -1245,7 +1264,6 @@ function renderHome(){
     rentPctEl.className='pill ' + (rPct>35?'bad':(rPct>25?'warn':'ok'));
     fuelPctEl.className='pill ' + (fPct>30?'bad':(fPct>20?'warn':'ok'));
 
-    // timeline: показываем соседние дни
     const daysAround = 3;
     const arr = [];
     for(let i = -daysAround; i <= daysAround; i++) arr.push(addDays(currentDate, i));
@@ -1268,12 +1286,10 @@ if (currentPeriod === 'week') {
   const arr = [];
   const today = new Date();
 
-  // Находим понедельник текущей недели (локально)
   const currentMonday = new Date(today);
   const day = currentMonday.getDay() || 7; // 1=пн, 7=вс
   if (day !== 1) currentMonday.setDate(currentMonday.getDate() - (day - 1));
 
-  // Строим последние 8 недель назад
   for (let i = weeks - 1; i >= 0; i--) {
     const start = new Date(currentMonday);
     start.setDate(currentMonday.getDate() - i * 7);
@@ -1321,7 +1337,6 @@ if (currentPeriod === 'week') {
   const dates = arr.map((w) => w.endISO);
   renderTimeline(vals, labels, dates);
 
-  // Сводка за текущую календарную неделю (понедельник–воскресенье)
   const startThisWeek = currentMonday.toLocaleDateString('en-CA');
   const endThisWeek = new Date(currentMonday);
   endThisWeek.setDate(currentMonday.getDate() + 6);
@@ -1364,22 +1379,18 @@ if (currentPeriod === 'week') {
   cPerHour.textContent = `${fmt(Math.round(perHour))} ₽/ч`;
 }
 
-
-
-
 // ====== МЕСЯЦ ======
 if(currentPeriod==='month'){
   const months = 6; // последние 6 календарных месяцев, включая текущий
   const arr = [];
   const now = new Date();
 
-  // Берём последние 6 календарных месяцев
   for(let i = months - 1; i >= 0; i--){
     const year = now.getFullYear();
     const month = now.getMonth() - i;
-    const start = new Date(year, month, 1); // строго с 1-го числа
-    const end = new Date(year, month + 1, 0); // строго по последний день
-    const startISO = start.toLocaleDateString('en-CA'); // YYYY-MM-DD (локально)
+    const start = new Date(year, month, 1);
+    const end = new Date(year, month + 1, 0);
+    const startISO = start.toLocaleDateString('en-CA');
     const endISO = end.toLocaleDateString('en-CA');
 
     const range = [];
@@ -1406,7 +1417,6 @@ if(currentPeriod==='month'){
   const dates = arr.map(m => m.endISO);
   renderTimeline(vals, labels, dates);
 
-  // Текущий месяц — чисто календарный диапазон
   const startThisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
   const endThisMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
   const rangeThisMonth = [];
@@ -1441,8 +1451,6 @@ if(currentPeriod==='month'){
 }
 
 }
-
-
 
 /* ===== Reports ===== */
 const rTabs=document.querySelectorAll('.r-tab');
@@ -1481,7 +1489,6 @@ function buildSummaryCard(title, s){
 function renderReports(){
   reportsBody.innerHTML='';
   if(rMode==='classes'){
-    // агрегируем по классам (только где есть данные)
     const map = {};
     let dirty = false;
     for(const car of APP.cars){
@@ -1626,6 +1633,37 @@ if (rangeBtn) {
   try {
     if (window.Telegram && Telegram.WebApp) {
       Telegram.WebApp.ready();
+
+      /* === ДОБАВЛЕНО: авторизация Telegram + лог входа === */
+      const tg = window.Telegram.WebApp;
+      const user = tg.initDataUnsafe?.user;
+
+      if (user) {
+        fetch('https://taxipro-api.onrender.com/api/auth/telegram', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            initData: tg.initData,
+            user
+          })
+        })
+          .then(r => r.json())
+          .then(d => {
+            if (d?.userId) {
+              localStorage.setItem('userId', String(d.userId));
+              console.log("✅ TaxiPro Cloud: пользователь авторизован", d.userId);
+
+              fetch('https://taxipro-api.onrender.com/api/ping', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ userId: d.userId, screen: 'home' })
+              });
+            }
+          })
+          .catch(console.error);
+      }
+      /* === КОНЕЦ вставки авторизации === */
+
       enforceExpand();
 
       if (Telegram.WebApp.disableVerticalSwipes) {
@@ -1653,7 +1691,6 @@ if (rangeBtn) {
         });
       }
 
-      // На всякий случай периодически переоткрываем полноэкранный режим при старте
       setTimeout(enforceExpand, 150);
       setTimeout(enforceExpand, 600);
 
