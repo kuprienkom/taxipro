@@ -29,17 +29,7 @@ async function apiPost(path, body) {
     console.log('[TaxiPro] Telegram WebApp не обнаружен — пропускаю авторизацию');
     return;
   }
-  try { tg.ready(); tg.expand && tg.expand(); } catch {}
-
-  // 1) апсерт пользователя в БД (Render + Mongo)
-  apiPost('/api/auth/telegram', { initData: tg.initData });
-
-  // 2) хартбит активности каждые 30 сек
-  setInterval(() => {
-    apiPost('/api/ping', { initData: tg.initData, screen: 'app' });
-  }, 30_000);
-})();
-
+  try { tg.ready(); if (tg.expand) tg.expand(
 /* ========= Storage schema =========
 {
   activeCarId: string,
