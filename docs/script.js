@@ -774,7 +774,7 @@ if (carRentInput) {
     step: 50,
     quick: [500,1000,2000,3000],
     quickLabel: quickLabelRub,
-    quickMode: 'set',
+    quickMode: 'add',
     sanitize: sanitizeMoneyValue,
     onSave:(value)=>{ carRentInput.value = value; }
   }));
