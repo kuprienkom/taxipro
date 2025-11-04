@@ -4,16 +4,16 @@
 <head>
 <meta charset="utf-8"/>
 <meta content="width=device-width,initial-scale=1" name="viewport"/>
-<title>Такси Анализатор</title>
+<title>TaxiPro</title>
 <link href="manifest.json" rel="manifest"/><link href="style.css" rel="stylesheet"/>
 
 <script defer="defer" src="script.js"></script></head>
 <body>
 <div class="app">
 <div class="appbar">
-<div class="logo"></div>
+<div class="logo" aria-hidden="true"></div>
 <div class="title">
-<b>Такси Анализатор</b>
+<b>TaxiPro</b>
 <span id="subtitle">Главная · сегодня</span>
 </div>
 <div class="right">
@@ -56,8 +56,8 @@
 </div>
 <div class="group-title">📊 Итого</div>
 <div class="cards">
-<div class="card readonly"><h3 id="cCommission">0 ₽</h3><p>Комиссия парка</p></div>
-<div class="card readonly"><h3 id="cTax">0 ₽</h3><p>Налог</p></div>
+<div class="card" data-edit="commissionManual"><h3 id="cCommission">0 ₽</h3><p>Комиссия парка</p></div>
+<div class="card" data-edit="taxManual"><h3 id="cTax">0 ₽</h3><p>Налог</p></div>
 <div class="card readonly"><h3 id="cProfit">0 ₽</h3><p>Чистая прибыль</p></div>
 <div class="card readonly"><h3 id="cEff">0%</h3><p>Эффективность</p></div>
 </div>
@@ -70,7 +70,7 @@
 <div class="row"><div>Доля аренды</div><span class="pill warn" id="rentPct">0%</span></div>
 <div class="row"><div>Доля топлива</div><span class="pill ok" id="fuelPct">0%</span></div>
 </div>
-<footer>🚕 Такси Анализатор v1.3 beta</footer>
+<footer>🚕 TaxiPro v1.4.4</footer>
 </div>
 <!-- REPORTS -->
 <div class="hidden" id="screen-reports">
@@ -95,13 +95,16 @@
 <div class="section">Автомобили</div>
 <div class="list">
 <div class="row">
-<div class="inline">
+<div class="car-form">
 <input id="carName" placeholder="Название авто (напр. Solaris)" style="padding:8px;border-radius:10px;border:1px solid rgba(255,255,255,.1);background:#0f0f10;color:#fff"/>
 <div class="inline" id="classButtons">
 <button class="mini" data-cls="Эконом">Эконом</button>
 <button class="mini" data-cls="Комфорт">Комфорт</button>
 <button class="mini" data-cls="Комфорт+">Комфорт+</button>
-<button class="mini" data-cls="Бизнес">Бизнес</button>
+</div>
+<div class="car-meta">
+<input id="carRent" min="0" placeholder="Сумма в сутки" step="50" type="number"/>
+<input id="carTank" max="120" min="20" placeholder="Объём бака" step="1" type="number"/>
 </div>
 </div>
 <button class="mini primary" id="addCarBtn">Добавить</button>
@@ -110,11 +113,21 @@
 </div>
 <div class="section">Система комиссий парка</div>
 <div class="list">
-<div class="row"><label class="radio"><input name="park" type="radio" value="none"/> <span>Без парка / Без комиссии</span></label></div>
-<div class="row"><label class="radio"><input name="park" type="radio" value="150day"/> <span>150 ₽ за рабочие сутки</span></label></div>
-<div class="row"><label class="radio"><input name="park" type="radio" value="15order"/> <span>15 ₽ с заказа (регионы)</span></label></div>
-<div class="row"><label class="radio"><input name="park" type="radio" value="20order"/> <span>20 ₽ с заказа (МСК/СПб)</span></label></div>
-<div class="row"><label class="radio"><input name="park" type="radio" value="4pct"/> <span>4% с дохода</span></label></div>
+        <div class="row park-option">
+          <label class="radio"><input name="park" type="radio" value="none"/> <span>Без парка / Без комиссии</span></label>
+        </div>
+        <div class="row park-option">
+          <label class="radio"><input name="park" type="radio" value="day"/> <span>Фикс за сутки</span></label>
+          <div class="option-input"><input id="parkDayValue" min="0" step="10" type="number"/> <span>р за сутки</span></div>
+        </div>
+        <div class="row park-option">
+          <label class="radio"><input name="park" type="radio" value="order"/> <span>С заказа</span></label>
+          <div class="option-input"><input id="parkOrderValue" min="0" step="1" type="number"/> <span>₽ за заказ</span></div>
+        </div>
+        <div class="row park-option">
+          <label class="radio"><input name="park" type="radio" value="percent"/> <span>Процент с дохода</span></label>
+          <div class="option-input"><input id="parkPercentValue" min="0" step="0.1" type="number"/> <span>%</span></div>
+        </div>
 </div>
 <div class="section">Налогообложение</div>
 <div class="list">
@@ -125,6 +138,10 @@
 <div class="section">Прочее</div>
 <div class="list">
 <div class="row">
+<div>Демо-режим</div>
+<button class="mini" id="demoBtn">Загрузить</button>
+</div>
+<div class="row">
 <div>Сброс данных</div>
 <button class="mini" id="resetBtn">Очистить</button>
 </div>
@@ -133,11 +150,21 @@
 </div>
 </div>
 <div class="nav">
-<div class="navbtn active" data-screen="home">🏠 Главная</div>
-<div class="navbtn" data-screen="reports">📊 Отчёты</div>
-<div class="navbtn" data-screen="settings">⚙️ Настройки</div>
+<div class="navbtn active" data-screen="home">
+<span class="nav-icon" aria-hidden="true">🏠</span>
+<span class="nav-label">Главная</span>
+</div>
+<div class="navbtn" data-screen="reports">
+<span class="nav-icon" aria-hidden="true">📊</span>
+<span class="nav-label">Отчёты</span>
+</div>
+<div class="navbtn" data-screen="settings">
+<span class="nav-icon" aria-hidden="true">⚙️</span>
+<span class="nav-label">Настройки</span>
 </div>
 </div>
+</div>
+<div aria-live="polite" class="toast" id="toast"></div>
 <!-- MODALS -->
 <div class="modal-bg" id="modalBg">
 <div class="modal">
@@ -161,14 +188,28 @@
 <input id="carEditName" placeholder="Например, Solaris"/>
 <label>Класс</label>
 <select id="carEditClass">
-<option>Эконом</option><option>Комфорт</option><option>Комфорт+</option><option>Бизнес</option>
+<option>Эконом</option><option>Комфорт</option><option>Комфорт+</option>
 </select>
 <label>Объём бака (л)</label>
 <input id="carEditTank" max="120" min="20" placeholder="50" step="1" type="number"/>
+<label>Сумма в сутки (₽)</label>
+<input id="carEditRent" list="rentPresets" min="0" placeholder="0" step="50" type="number"/>
 </div>
 <div class="actions">
 <button class="btn ghost" id="carEditCancel">Отмена</button>
 <button class="btn primary" id="carEditSave">Сохранить</button>
+</div>
+</div>
+</div>
+<div class="modal-bg" id="confirmBg">
+<div class="modal">
+<header><b id="confirmTitle">Подтверждение</b></header>
+<div class="body">
+<p id="confirmMessage"></p>
+</div>
+<div class="actions">
+<button class="btn ghost" id="confirmCancel">Отмена</button>
+<button class="btn primary" id="confirmOk">Продолжить</button>
 </div>
 </div>
 </div>

@@ -10,20 +10,31 @@ const isoToShort = (iso)=>{const d=new Date(iso);return d.toLocaleDateString('ru
 /* ========= Storage schema =========
 {
   activeCarId: string,
-  cars: [{id,name,cls,tank}],
-  settings: { parkMode:'none'|'150day'|'15order'|'20order'|'4pct', taxMode:'none'|'self4'|'ip6' },
+  cars: [{id,name,cls,tank,rentPerDay}],
+  settings: {
+    park: { mode:'none'|'day'|'order'|'percent', dayFee, orderFee, percent },
+    taxMode:'none'|'self4'|'ip6'
+  },
   dataByCar: {
-    [carId]: { [dateISO]: {orders,income,rent,fuel,tips,otherIncome,otherExpense,fines,hours} }
+    [carId]: { [dateISO]: {orders,income,rent,fuel,tips,otherIncome,otherExpense,fines,hours,settings:{park:{...},taxMode}} }
   }
 }
 ==================================== */
 const LS_KEY = 'taxiAnalyzerV13';
 
-function loadAll() {
-  const raw = localStorage.getItem(LS_KEY);
-  if (raw) return JSON.parse(raw);
+function createEmptyApp() {
+  return {
+    activeCarId: null,
+    cars: [],
+    settings: {
+      park: { mode: 'none', dayFee: 0, orderFee: 0, percent: 0 },
+      taxMode: 'none'
+    },
+    dataByCar: {}
+  };
+}
 
-  // === создаём демонстрационные данные ===
+function createDemoApp() {
   const carId = crypto.randomUUID();
   const seedData = {};
 
@@ -33,7 +44,7 @@ function loadAll() {
     seedData[d] = {
       orders: 18 + (i % 5),
       income: 5500 + (i % 4) * 400,
-      rent: 2700,
+      rent: 2800,
       fuel: 1000 + (i % 3) * 100,
       tips: 100 + (i % 2) * 30,
       otherIncome: 0,
@@ -49,7 +60,7 @@ function loadAll() {
     seedData[d] = {
       orders: 16 + (i % 7),
       income: 6200 + (i % 5) * 350,
-      rent: 2790,
+      rent: 2800,
       fuel: 1100 + (i % 4) * 120,
       tips: 120 + (i % 3) * 20,
       otherIncome: (i % 10 === 0) ? 500 : 0,
@@ -65,7 +76,7 @@ function loadAll() {
     seedData[d] = {
       orders: 15 + (i % 5),
       income: 5800 + (i % 3) * 400,
-      rent: 2790,
+      rent: 2800,
       fuel: 1300 + (i % 2) * 100,
       tips: 150 + (i % 2) * 50,
       otherIncome: (i % 5 === 0) ? 400 : 0,
@@ -75,36 +86,220 @@ function loadAll() {
     };
   }
 
-  // === создаём объект приложения ===
-  const obj = {
+  return {
     activeCarId: carId,
-    cars: [{ id: carId, name: 'Kia Rio', cls: 'Комфорт', tank: 50 }],
-    settings: { parkMode: '150day', taxMode: 'none' },
+    cars: [{ id: carId, name: 'Тигго4', cls: 'Комфорт', tank: 50, rentPerDay: 2800 }],
+    settings: {
+      park: { mode: 'day', dayFee: 150, orderFee: 15, percent: 4 },
+      taxMode: 'none'
+    },
     dataByCar: { [carId]: seedData }
   };
+}
 
-  localStorage.setItem(LS_KEY, JSON.stringify(obj));
-  return obj;
+function loadAll() {
+  const raw = localStorage.getItem(LS_KEY);
+  if (raw) return JSON.parse(raw);
+  return createEmptyApp();
 }
 
 function saveAll() {
   localStorage.setItem(LS_KEY, JSON.stringify(APP));
 }
 
+const PARK_MODES = new Set(['none','day','order','percent']);
+const TAX_MODES = new Set(['none','self4','ip6']);
+const DAY_FIELDS = ['orders','income','rent','fuel','tips','otherIncome','otherExpense','fines','hours'];
+
+function sanitizeTaxMode(mode) {
+  return TAX_MODES.has(mode) ? mode : 'none';
+}
+
+function sanitizeParkConfig(raw = {}, defaults = {}) {
+  const merged = { ...defaults, ...raw };
+  const originalMode = raw && raw.mode;
+  let mode = merged.mode != null ? merged.mode : (defaults.mode || 'none');
+  if (mode === 'orderRegion' || mode === 'orderCapital') mode = 'order';
+  if (!PARK_MODES.has(mode)) mode = 'none';
+
+  const dayFeeNum = Number(merged.dayFee != null ? merged.dayFee : defaults.dayFee);
+  const dayFee = Number.isFinite(dayFeeNum) ? Math.max(0, Math.round(dayFeeNum)) : 0;
+
+  let orderSource = merged.orderFee;
+  if (orderSource == null && originalMode === 'orderCapital' && merged.orderCapital != null) orderSource = merged.orderCapital;
+  if (orderSource == null && originalMode === 'orderRegion' && merged.orderRegion != null) orderSource = merged.orderRegion;
+  if (orderSource == null && merged.orderRegion != null) orderSource = merged.orderRegion;
+  if (orderSource == null && merged.orderCapital != null) orderSource = merged.orderCapital;
+  if (orderSource == null && defaults.orderFee != null) orderSource = defaults.orderFee;
+  const orderFeeNum = Number(orderSource);
+  const orderFee = Number.isFinite(orderFeeNum) ? Math.max(0, Math.round(orderFeeNum)) : 0;
+
+  const percentNum = Number(merged.percent != null ? merged.percent : defaults.percent);
+  const percent = Number.isFinite(percentNum) ? Math.max(0, percentNum) : 0;
+
+  return { mode, dayFee, orderFee, percent };
+}
+
+function cloneSnapshot(snapshot) {
+  if (!snapshot) {
+    return { park: sanitizeParkConfig(), taxMode: 'none', rentPerDay: 0 };
+  }
+  const rentPerDay = sanitizeRentPerDay(snapshot.rentPerDay, 0);
+  return {
+    park: sanitizeParkConfig(snapshot.park),
+    taxMode: sanitizeTaxMode(snapshot.taxMode),
+    rentPerDay
+  };
+}
+
+function sanitizeSettingsSnapshot(raw, fallbackSnapshot) {
+  const fallback = cloneSnapshot(fallbackSnapshot);
+  const sourcePark = raw && raw.park ? raw.park : {};
+  const park = sanitizeParkConfig(sourcePark, fallback.park);
+  const rawTax = raw && raw.taxMode != null ? raw.taxMode : fallback.taxMode;
+  const taxMode = sanitizeTaxMode(rawTax);
+  const rentPerDay = sanitizeRentPerDay(raw && raw.rentPerDay, fallback.rentPerDay);
+  return { park, taxMode, rentPerDay };
+}
+
+function normalizeDayEntry(entry, fallbackSnapshot) {
+  const base = { orders:0,income:0,rent:0,fuel:0,tips:0,otherIncome:0,otherExpense:0,fines:0,hours:0,commissionManual:null,taxManual:null };
+  const day = { ...base, ...(entry || {}) };
+  DAY_FIELDS.forEach(key => {
+    const num = Number(day[key]);
+    day[key] = Number.isFinite(num) ? num : 0;
+  });
+  day.settings = sanitizeSettingsSnapshot(entry && entry.settings, fallbackSnapshot);
+  day.commissionManual = sanitizeOptionalMoney(day.commissionManual);
+  day.taxManual = sanitizeOptionalMoney(day.taxManual);
+  return day;
+}
+
+function clampTank(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return 50;
+  return Math.max(20, Math.min(120, Math.round(num)));
+}
+
+function safeMoney(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? Math.max(0, Math.round(num)) : 0;
+}
+
+function sanitizeRentPerDay(value, fallback = 0) {
+  const source = value != null ? value : fallback;
+  return safeMoney(source);
+}
+
+
+
+
+function normalizeApp(app){
+  app = app || {};
+  app.settings = app.settings || {};
+
+  if (!app.settings.park && app.settings.parkMode) {
+    const map = {
+      none: 'none',
+      '150day': 'day',
+      '15order': 'order',
+      '20order': 'order',
+      '4pct': 'percent'
+    };
+    app.settings.park = { mode: map[app.settings.parkMode] || 'none' };
+  }
+
+  const defaultsPark = { mode: 'none', dayFee: 150, orderFee: 15, percent: 4 };
+  app.settings.park = sanitizeParkConfig(app.settings.park || {}, defaultsPark);
+  delete app.settings.park.orderRegion;
+  delete app.settings.park.orderCapital;
+
+  app.settings.taxMode = sanitizeTaxMode(app.settings.taxMode);
+  delete app.settings.parkMode;
+
+  if (!Array.isArray(app.cars)) app.cars = [];
+  app.cars = app.cars.map(car => {
+    const id = car && typeof car.id === 'string' ? car.id : (crypto.randomUUID ? crypto.randomUUID() : `car-${Date.now()}`);
+    const tank = clampTank(car && car.tank);
+    const rentSource = car && (car.rentPerDay != null ? car.rentPerDay : car.rent);
+    const rentPerDay = safeMoney(rentSource);
+    return {
+      id,
+      name: car && car.name ? car.name : 'Без названия',
+      cls: car && car.cls ? car.cls : 'Эконом',
+      tank,
+      rentPerDay
+    };
+  });
+
+  app.dataByCar = app.dataByCar || {};
+  app.cars.forEach(car => {
+    if (!app.dataByCar[car.id]) app.dataByCar[car.id] = {};
+    const defaultsSnapshot = {
+      park: { ...app.settings.park },
+      taxMode: app.settings.taxMode,
+      rentPerDay: sanitizeRentPerDay(car.rentPerDay)
+    };
+    const days = app.dataByCar[car.id] || {};
+    Object.keys(days).forEach(dateISO => {
+      days[dateISO] = normalizeDayEntry(days[dateISO], defaultsSnapshot);
+    });
+  });
+
+  if (!app.activeCarId || !app.cars.some(c => c.id === app.activeCarId)) {
+    app.activeCarId = app.cars[0] ? app.cars[0].id : null;
+  }
+
+  return app;
+}
+
+
+function currentSettingsSnapshot(){
+  const car = APP.cars.find(c => c.id === APP.activeCarId);
+  return {
+    park: { ...APP.settings.park },
+    taxMode: APP.settings.taxMode,
+    rentPerDay: sanitizeRentPerDay(car && car.rentPerDay)
+  };
+}
+
 
 /* ========= State ========= */
-let APP = loadAll();
+let APP = normalizeApp(loadAll());
 
 let currentScreen='home';
 let currentPeriod='day';
 let currentDate=todayISO();
 
-const byCar = () => APP.dataByCar[APP.activeCarId] || (APP.dataByCar[APP.activeCarId]={});
-const ensureDay = (iso) => {
-  const d = byCar()[iso];
-  if (d) return d;
-  return (byCar()[iso] = {orders:0,income:0,rent:0,fuel:0,tips:0,otherIncome:0,otherExpense:0,fines:0,hours:0});
+const byCar = () => {
+  if (!APP.activeCarId) return null;
+  if (!APP.dataByCar[APP.activeCarId]) APP.dataByCar[APP.activeCarId] = {};
+  return APP.dataByCar[APP.activeCarId];
+};
+function getDayData(iso, create=false){
+  const store = byCar();
+  if (!store) {
+    const snapshot = cloneSnapshot(currentSettingsSnapshot());
+    return {orders:0,income:0,rent:0,fuel:0,tips:0,otherIncome:0,otherExpense:0,fines:0,hours:0,commissionManual:null,taxManual:null,settings:snapshot};
+  }
+  let d = store[iso];
+  if (d) {
+    if (applyAutoRent(d)) saveAll();
+    return d;
+  }
+  const snapshot = cloneSnapshot(currentSettingsSnapshot());
+  if (!create) {
+    return {orders:0,income:0,rent:0,fuel:0,tips:0,otherIncome:0,otherExpense:0,fines:0,hours:0,commissionManual:null,taxManual:null,settings:snapshot};
+  }
+  d = {orders:0,income:0,rent:0,fuel:0,tips:0,otherIncome:0,otherExpense:0,fines:0,hours:0,commissionManual:null,taxManual:null,settings:snapshot};
+  store[iso] = d;
+  return d;
 }
+const ensureDay = (iso) => {
+  if (!APP.activeCarId) return null;
+  return getDayData(iso, true);
+};
+const readDay = (iso) => getDayData(iso, false);
 
 /* ========= DOM refs ========= */
 const subtitle = document.getElementById('subtitle');
@@ -143,6 +338,71 @@ const fuelPctEl=document.getElementById('fuelPct');
 
 const reportsBody=document.getElementById('reportsBody');
 
+const parkDayInput = document.getElementById('parkDayValue');
+const parkOrderInput = document.getElementById('parkOrderValue');
+const parkPercentInput = document.getElementById('parkPercentValue');
+
+const toastEl = document.getElementById('toast');
+let toastTimer = null;
+
+const confirmBg = document.getElementById('confirmBg');
+const confirmTitle = document.getElementById('confirmTitle');
+const confirmMessage = document.getElementById('confirmMessage');
+const confirmCancel = document.getElementById('confirmCancel');
+const confirmOk = document.getElementById('confirmOk');
+let confirmKeyHandler = null;
+
+function showToast(message, duration = 2600) {
+  if (!toastEl) return;
+  toastEl.textContent = message;
+  toastEl.classList.add('show');
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    toastEl.classList.remove('show');
+  }, duration);
+}
+
+function showConfirm(message, options = {}) {
+  return new Promise((resolve) => {
+    confirmTitle.textContent = options.title || 'Подтверждение';
+    confirmMessage.textContent = message;
+    confirmOk.textContent = options.okLabel || 'Продолжить';
+    confirmCancel.textContent = options.cancelLabel || 'Отмена';
+    confirmBg.classList.add('show');
+
+    const cleanup = (result) => {
+      confirmBg.classList.remove('show');
+      confirmOk.onclick = null;
+      confirmCancel.onclick = null;
+      confirmBg.removeEventListener('click', onBgClick);
+      if (confirmKeyHandler) {
+        document.removeEventListener('keydown', confirmKeyHandler);
+        confirmKeyHandler = null;
+      }
+      resolve(result);
+    };
+
+    const onBgClick = (e) => {
+      if (e.target === confirmBg) cleanup(false);
+    };
+
+    confirmOk.onclick = () => cleanup(true);
+    confirmCancel.onclick = () => cleanup(false);
+    confirmBg.addEventListener('click', onBgClick);
+
+    confirmKeyHandler = (e) => {
+      if (e.key === 'Escape') {
+        cleanup(false);
+      }
+    };
+    document.addEventListener('keydown', confirmKeyHandler);
+
+    setTimeout(() => {
+      confirmOk.focus();
+    }, 0);
+  });
+}
+
 /* ========= Modal (edit values) ========= */
 const modalBg = document.getElementById('modalBg');
 const modalTitle=document.getElementById('modalTitle');
@@ -151,51 +411,316 @@ const modalInput=document.getElementById('modalInput');
 const quickArea=document.getElementById('quickArea');
 const btnCancel=document.getElementById('btnCancel');
 const btnSave=document.getElementById('btnSave');
-let editField=null;
+let modalContext=null;
+let modalOpenedAt=0;
 
-const QUICK_PRESETS = {
+const DAY_QUICK_PRESETS = {
   income: [1000,3000,5000],
   otherIncome: [500,1000,2000],
   tips: [50,100,200],
-  rent: [500,1000,1500],
+  rent: [500,1000,2000,3000],
   fuel: [100,500,1000],
   otherExpense: [100,300,500],
   fines: [500,1000,3000],
   orders: [1,5,10],
-  hours: [1,2,4]
+  hours: [1,2,4],
+  commissionManual: [200,500,1000,1500],
+  taxManual: [200,500,800,1200]
 };
+const DAY_MONEY_FIELDS = new Set(['income','otherIncome','tips','rent','fuel','otherExpense','fines','commissionManual','taxManual']);
 
-function renderQuick(field){
+const quickLabelRub = (val) => `+${fmt(val)} ₽`;
+const quickLabelPercent = (val) => `+${val}%`;
+
+function defaultParse(raw){
+  const num = Number(raw);
+  return Number.isFinite(num) ? num : 0;
+}
+
+function renderQuickFromContext(context){
+  const values = context.quick || [];
   quickArea.innerHTML = '';
-  (QUICK_PRESETS[field]||[]).forEach(val=>{
+  quickArea.style.display = values.length ? 'flex' : 'none';
+  values.forEach(val=>{
     const chip=document.createElement('div');
     chip.className='chip';
-    chip.textContent = field==='orders'||field==='hours' ? `+${val}` : `+${val} ₽`;
-    chip.onclick=()=>{ modalInput.value = Number(modalInput.value||0) + val; };
+    chip.textContent = context.quickLabel ? context.quickLabel(val) : `+${val}`;
+    chip.onclick=()=>{
+      const parser = context.parse || defaultParse;
+      const current = parser(modalInput.value||0);
+      const base = Number.isFinite(current) ? current : 0;
+      const next = context.quickMode==='set'
+        ? (context.quickCompute ? context.quickCompute(val, base) : val)
+        : base + val;
+      const preview = context.quickPreview
+        ? context.quickPreview(next, val, base)
+        : (context.sanitize ? context.sanitize(next) : next);
+      const formatted = context.format ? context.format(preview) : preview;
+      modalInput.value = formatted;
+    };
     quickArea.appendChild(chip);
   });
 }
-function openModal(field,title){
-  editField=field; modalTitle.textContent=title; modalLabel.textContent='Введите значение';
-  modalInput.value = Number(ensureDay(currentDate)[field]||0);
-  renderQuick(field);
-  modalBg.classList.add('show'); modalInput.focus();
+
+function openModal(context){
+  modalContext = {
+    title: 'Изменить',
+    label: 'Введите значение',
+    value: 0,
+    step: 1,
+    min: 0,
+    quick: [],
+    quickMode: 'add',
+    parse: defaultParse,
+    sanitize: (v)=>v,
+    format: (v)=>v,
+    allowNull: false,
+    placeholder: null,
+    ...context
+  };
+  modalOpenedAt = performance.now();
+  modalTitle.textContent = modalContext.title;
+  modalLabel.textContent = modalContext.label;
+  modalInput.type = modalContext.inputType || 'number';
+  if (modalContext.min != null) modalInput.min = modalContext.min;
+  else modalInput.removeAttribute('min');
+  if (modalContext.max != null) modalInput.max = modalContext.max;
+  else modalInput.removeAttribute('max');
+  modalInput.step = modalContext.step != null ? modalContext.step : 1;
+  if (modalContext.inputMode) {
+    modalInput.setAttribute('inputmode', modalContext.inputMode);
+  } else {
+    modalInput.removeAttribute('inputmode');
+  }
+  if (modalContext.placeholder != null) {
+    modalInput.placeholder = modalContext.placeholder;
+  } else {
+    modalInput.placeholder = '0';
+  }
+  const hasNullValue = modalContext.allowNull && modalContext.value == null;
+  const initialRaw = modalContext.value != null ? modalContext.value : 0;
+  if (hasNullValue) {
+    modalInput.value = '';
+  } else {
+    const initial = modalContext.prepare ? modalContext.prepare(initialRaw) : modalContext.sanitize(initialRaw);
+    modalInput.value = modalContext.format ? modalContext.format(initial) : initial;
+  }
+  renderQuickFromContext(modalContext);
+  modalBg.classList.add('show');
+  modalInput.focus();
+  modalInput.select();
 }
-function closeModal(){ modalBg.classList.remove('show'); editField=null; }
+
+function closeModal(){
+  modalBg.classList.remove('show');
+  modalContext=null;
+}
 btnCancel.onclick=closeModal;
-modalBg.addEventListener('click',e=>{ if(e.target===modalBg) closeModal(); });
+modalBg.addEventListener('pointerdown',e=>{
+  if(e.target===modalBg) closeModal();
+});
+modalBg.addEventListener('click',e=>{
+  if(performance.now()-modalOpenedAt<200) return;
+  if(e.target===modalBg) closeModal();
+});
 btnSave.onclick=()=>{
-  if(!editField) return;
-  const v = Number(modalInput.value||0);
-  ensureDay(currentDate)[editField]=v;
-  saveAll(); closeModal(); render();
+  if(!modalContext) return;
+  const context = modalContext;
+  const raw = modalInput.value;
+  if (context.allowNull && (raw === '' || raw == null)) {
+    closeModal();
+    if (context.onSave) context.onSave(null);
+    return;
+  }
+  const parser = context.parse || defaultParse;
+  let value = parser(raw || 0);
+  if (!Number.isFinite(value)) value = context.fallback != null ? context.fallback : 0;
+  if (context.min != null) value = Math.max(context.min, value);
+  if (context.max != null) value = Math.min(context.max, value);
+  value = context.sanitize ? context.sanitize(value) : value;
+  if (context.allowNull && value == null) {
+    closeModal();
+    if (context.onSave) context.onSave(null);
+    return;
+  }
+  closeModal();
+  if (context.onSave) context.onSave(value);
 };
+
+function openDayModal(field, title){
+  if (!APP.activeCarId) {
+    showToast('Добавьте авто в настройках, чтобы вносить данные.');
+    return;
+  }
+  const day = ensureDay(currentDate);
+  const manualFields = new Set(['commissionManual','taxManual']);
+  const isManual = manualFields.has(field);
+  let current = day[field];
+  if (isManual) {
+    if (current != null) {
+      const num = Number(current);
+      current = Number.isFinite(num) ? num : null;
+    } else {
+      current = null;
+    }
+  } else {
+    current = Number(day[field]||0);
+  }
+  const quick = DAY_QUICK_PRESETS[field] || [];
+  const isMoney = DAY_MONEY_FIELDS.has(field);
+  const isOrders = field==='orders';
+  const isHours = field==='hours';
+  const sanitize = (val)=>{
+    const num = Number(val);
+    if (!Number.isFinite(num)) return 0;
+    if (isMoney || isOrders || isHours) return Math.max(0, Math.round(num));
+    return Math.max(0, num);
+  };
+  let quickLabel;
+  if (quick.length) {
+    if (isMoney) quickLabel = quickLabelRub;
+    else if (isOrders) quickLabel = (v)=>`+${v}`;
+    else if (isHours) quickLabel = (v)=>`+${v} ч`;
+  }
+  let placeholder = null;
+  if (isManual) {
+    const prev = day[field];
+    day[field] = null;
+    const auto = field === 'commissionManual' ? calcCommission(day) : calcTax(day);
+    placeholder = `Авто: ${rub(auto)}`;
+    day[field] = prev;
+  }
+  openModal({
+    title,
+    value: current,
+    quick,
+    quickLabel,
+    quickMode: 'add',
+    sanitize,
+    allowNull: isManual,
+    placeholder,
+    onSave:(value)=>{
+      if (value == null && isManual) {
+        day[field] = null;
+      } else {
+        day[field]=value;
+      }
+      applyAutoRent(day);
+      saveAll();
+      render();
+    }
+  });
+}
+
+function sanitizeMoneyValue(value){
+  return safeMoney(value);
+}
+
+function sanitizeOptionalMoney(value){
+  if (value === null || value === undefined || value === '') return null;
+  return safeMoney(value);
+}
+
+function sanitizePercentValue(value){
+  const num = Number(value);
+  if (!Number.isFinite(num)) return 0;
+  return Math.max(0, Math.round(num * 10) / 10);
+}
+
+function attachModalInput(input, getContext){
+  if (!input) return;
+  input._modalGetContext = getContext;
+  if (!input.dataset.modalBound) {
+    input.dataset.modalBound = '1';
+    input.readOnly = true;
+    input.classList.add('modal-trigger');
+    let touchSession = null;
+
+    const triggerModal = (ev) => {
+      if (ev) ev.preventDefault();
+      const ctxGetter = input._modalGetContext;
+      const ctx = ctxGetter && ctxGetter();
+      if (ctx) openModal(ctx);
+    };
+
+    input.addEventListener('pointerdown', (ev)=>{
+      if (ev.pointerType === 'touch') {
+        touchSession = {
+          id: ev.pointerId,
+          x: ev.clientX,
+          y: ev.clientY,
+          moved: false,
+          triggered: false
+        };
+      } else {
+        touchSession = null;
+      }
+    });
+
+    input.addEventListener('pointermove', (ev)=>{
+      if (!touchSession || ev.pointerId !== touchSession.id) return;
+      const dx = Math.abs(ev.clientX - touchSession.x);
+      const dy = Math.abs(ev.clientY - touchSession.y);
+      if (dx > 14 || dy > 14) {
+        touchSession.moved = true;
+      }
+    });
+
+    input.addEventListener('pointerup', (ev)=>{
+      if (ev.pointerType === 'touch') {
+        if (!touchSession || ev.pointerId !== touchSession.id) {
+          touchSession = null;
+          return;
+        }
+        if (!touchSession.moved) {
+          touchSession.triggered = true;
+          triggerModal(ev);
+        }
+        // keep the session for the ensuing click event so it can acknowledge the trigger
+        // and avoid reopening; it will be cleared in the click handler.
+        return;
+      }
+      triggerModal(ev);
+    });
+
+    input.addEventListener('pointercancel', ()=>{
+      touchSession = null;
+    });
+
+    input.addEventListener('click', (ev)=>{
+      ev.preventDefault();
+      if (touchSession) {
+        if (touchSession.moved) {
+          touchSession = null;
+          return;
+        }
+        if (touchSession.triggered) {
+          touchSession = null;
+          return;
+        }
+        triggerModal(ev);
+        touchSession = null;
+        return;
+      }
+      triggerModal(ev);
+    });
+    input.addEventListener('keydown', (ev)=>{
+      if (ev.key==='Enter' || ev.key===' ' || ev.key==='Space' || ev.key==='Spacebar') {
+        ev.preventDefault();
+        const ctxGetter = input._modalGetContext;
+        const ctx = ctxGetter && ctxGetter();
+        if (ctx) openModal(ctx);
+      }
+    });
+  }
+}
 
 /* ========= Car Edit Modal ========= */
 const carEditBg=document.getElementById('carEditBg');
 const carEditName=document.getElementById('carEditName');
 const carEditClass=document.getElementById('carEditClass');
 const carEditTank=document.getElementById('carEditTank');
+const carEditRent=document.getElementById('carEditRent');
 const carEditCancel=document.getElementById('carEditCancel');
 const carEditSave=document.getElementById('carEditSave');
 let editingCarId=null;
@@ -203,8 +728,18 @@ let editingCarId=null;
 function openCarEdit(car){
   editingCarId=car.id;
   carEditName.value=car.name||'';
+  if(car.cls){
+    let option=[...carEditClass.options].find(opt=>opt.value===car.cls);
+    if(!option){
+      option=document.createElement('option');
+      option.value=car.cls;
+      option.textContent=car.cls;
+      carEditClass.appendChild(option);
+    }
+  }
   carEditClass.value=car.cls||'Эконом';
   carEditTank.value=car.tank||50;
+  carEditRent.value=car.rentPerDay||0;
   carEditBg.classList.add('show');
 }
 function closeCarEdit(){ carEditBg.classList.remove('show'); editingCarId=null; }
@@ -215,24 +750,52 @@ carEditSave.onclick=()=>{
   if(!car) return;
   car.name=carEditName.value||car.name;
   car.cls=carEditClass.value||car.cls;
-  car.tank=Number(carEditTank.value||car.tank||50);
+  if(carEditTank.value!=='' && carEditTank.value!=null){
+    car.tank=clampTank(carEditTank.value);
+  }
+  if(carEditRent.value!=='' && carEditRent.value!=null){
+    car.rentPerDay=safeMoney(carEditRent.value);
+  }
   saveAll(); closeCarEdit(); render();
 };
 
 /* ========= Cars UI ========= */
 const carName=document.getElementById('carName');
+const carRentInput=document.getElementById('carRent');
+const carTankInput=document.getElementById('carTank');
 const classButtons=document.getElementById('classButtons');
 let newCarClass='Эконом';
+
+if (carRentInput) {
+  attachModalInput(carRentInput, ()=>({
+    title: 'Сумма в сутки',
+    value: carRentInput.value==='' ? 0 : Number(carRentInput.value),
+    min: 0,
+    step: 50,
+    quick: [500,1000,2000,3000],
+    quickLabel: quickLabelRub,
+    quickMode: 'set',
+    sanitize: sanitizeMoneyValue,
+    onSave:(value)=>{ carRentInput.value = value; }
+  }));
+}
+
 classButtons.querySelectorAll('button').forEach(b=>{
-  b.onclick=()=>{ newCarClass=b.dataset.cls; classButtons.querySelectorAll('button').forEach(x=>x.classList.remove('primary')); b.classList.add('primary'); };
+  b.onclick=()=>{
+    newCarClass=b.dataset.cls;
+    classButtons.querySelectorAll('button').forEach(x=>x.classList.remove('primary'));
+    b.classList.add('primary');
+  };
 });
+const defaultClassBtn=classButtons.querySelector('button[data-cls="Эконом"]');
+if(defaultClassBtn) defaultClassBtn.classList.add('primary');
 const addCarBtn=document.getElementById('addCarBtn');
 const carsContainer=document.getElementById('carsContainer');
 
 function renderCars(){
   const items = APP.cars.map(c=>`
     <div class="car-item">
-      <div><b>${c.name}</b> · <span style="color:var(--muted)">${c.cls||'-'}</span> · бак ${c.tank||'-'} л</div>
+      <div class="car-info"><b>${c.name}</b> · <span class="car-class">${c.cls||'-'}</span> · ${rub(c.rentPerDay||0)} / сутки</div>
       <div class="car-actions">
         <button class="mini" data-edit="${c.id}">⚙️</button>
         <button class="mini ${APP.activeCarId===c.id?'primary':''}" data-car="${c.id}">${APP.activeCarId===c.id?'Активно':'Выбрать'}</button>
@@ -246,13 +809,18 @@ function renderCars(){
     b.onclick=()=>{ APP.activeCarId=b.dataset.car; saveAll(); render(); };
   });
   carsContainer.querySelectorAll('button[data-del]').forEach(b=>{
-    b.onclick=()=>{
+    b.onclick=async ()=>{
       const id=b.dataset.del;
-      if(APP.cars.length===1){ alert('Нельзя удалить единственную машину'); return; }
+      const car=APP.cars.find(x=>x.id===id);
+      const ok = await showConfirm(`Удалить авто «${car ? car.name : 'Без названия'}» и все связанные данные?`, { okLabel: 'Удалить' });
+      if(!ok) return;
       APP.cars=APP.cars.filter(x=>x.id!==id);
       delete APP.dataByCar[id];
-      if(APP.activeCarId===id) APP.activeCarId=APP.cars[0].id;
-      saveAll(); render();
+      if(APP.activeCarId===id) APP.activeCarId=APP.cars[0]?APP.cars[0].id:null;
+      if(!APP.activeCarId) currentDate=todayISO();
+      saveAll();
+      render();
+      showToast('Авто удалено.');
     };
   });
   carsContainer.querySelectorAll('button[data-edit]').forEach(b=>{
@@ -261,69 +829,183 @@ function renderCars(){
 }
 addCarBtn.onclick=()=>{
   const name=(carName.value||'').trim();
-  if(!name) return alert('Укажи название авто');
+  if(!name) { showToast('Укажи название авто.'); return; }
   const id=crypto.randomUUID();
-  APP.cars.push({id,name,cls:newCarClass,tank:50});
+  const rentPerDay=safeMoney(carRentInput && carRentInput.value!==undefined ? carRentInput.value : 0);
+  const tankRaw=carTankInput && carTankInput.value!==undefined && carTankInput.value!=='' ? carTankInput.value : 50;
+  APP.cars.push({id,name,cls:newCarClass,tank:clampTank(tankRaw),rentPerDay});
   APP.dataByCar[id]={};
   APP.activeCarId=id;
-  carName.value=''; newCarClass='Эконом';
+  carName.value='';
+  if(carRentInput) carRentInput.value='';
+  if(carTankInput) carTankInput.value='';
+  newCarClass='Эконом';
   classButtons.querySelectorAll('button').forEach(x=>x.classList.remove('primary'));
+  if(defaultClassBtn) defaultClassBtn.classList.add('primary');
   saveAll(); render();
+  showToast('Авто добавлено.');
 };
 
 /* ========= Settings (commission & tax) ========= */
 function bindSettingsRadios(){
+  const park = APP.settings.park;
   document.querySelectorAll('input[name="park"]').forEach(r=>{
-    r.checked = (APP.settings.parkMode===r.value);
-    r.onchange = ()=>{ APP.settings.parkMode=r.value; saveAll(); render(); };
+    r.checked = (park.mode===r.value);
+    r.onchange = ()=>{ park.mode=r.value; saveAll(); render(); };
   });
+
+  const bindParkInput = (input, key, options = {}) => {
+    if(!input) return;
+    const sanitize = options.sanitize || sanitizeMoneyValue;
+    const parse = options.parse || defaultParse;
+    const display = options.display || ((v)=>v);
+    const quick = options.quick || [];
+    const quickLabel = options.quickLabel;
+    const min = options.min != null ? options.min : 0;
+    const step = options.step != null ? options.step : 1;
+    const inputMode = options.inputMode;
+    const quickMode = options.quickMode || 'add';
+
+    const sanitized = sanitize(park[key]);
+    park[key] = sanitized;
+    input.value = display(sanitized);
+
+    attachModalInput(input, ()=>({
+      title: options.title || 'Введите значение',
+      value: park[key] != null ? park[key] : 0,
+      min,
+      step,
+      quick,
+      quickLabel,
+      quickMode,
+      parse,
+      sanitize,
+      inputMode,
+      onSave:(value)=>{
+        park[key] = value;
+        input.value = display(value);
+        saveAll();
+        render();
+      }
+    }));
+  };
+
+  bindParkInput(parkDayInput, 'dayFee', {
+    title: 'Фикс за сутки',
+    quick: [150,200,300,500],
+    quickLabel: quickLabelRub,
+    sanitize: sanitizeMoneyValue,
+    step: 10,
+    quickMode: 'add'
+  });
+  bindParkInput(parkOrderInput, 'orderFee', {
+    title: 'С заказа',
+    quick: [10,15,20,25],
+    quickLabel: quickLabelRub,
+    sanitize: sanitizeMoneyValue,
+    step: 5,
+    quickMode: 'add'
+  });
+  bindParkInput(parkPercentInput, 'percent', {
+    title: 'Процент с дохода',
+    quick: [1,3,4,5,7],
+    quickLabel: quickLabelPercent,
+    sanitize: sanitizePercentValue,
+    parse: (raw)=>{
+      const num = parseFloat(raw);
+      return Number.isFinite(num) ? num : 0;
+    },
+    step: 0.1,
+    inputMode: 'decimal',
+    quickMode: 'add'
+  });
+
   document.querySelectorAll('input[name="tax"]').forEach(r=>{
     r.checked = (APP.settings.taxMode===r.value);
     r.onchange = ()=>{ APP.settings.taxMode=r.value; saveAll(); render(); };
   });
- document.getElementById('resetBtn').onclick = () => {
-  if (confirm('Сбросить все локальные данные и загрузить демо-пример?')) {
-    localStorage.removeItem(LS_KEY);
-
-    // Подождём, чтобы гарантированно очистилось, и создадим seed-данные заново
-   setTimeout(() => {
-  APP = loadAll();   // создаём демо данные
-  saveAll();
-
-  // выставляем дату последнего дня демо, чтобы график не был пуст
-  currentDate = "2024-11-10";
-  currentPeriod = "day";
-
-  render();
-  alert('✅ Демо-данные успешно загружены. Открой график — данные за сентябрь, октябрь и ноябрь!');
-}, 150);
-
+  const resetBtn = document.getElementById('resetBtn');
+  if (resetBtn) {
+    resetBtn.onclick = async () => {
+      const ok = await showConfirm('Сбросить все локальные данные? Все данные будут безвозвратно удалены.', { okLabel: 'Очистить' });
+      if (!ok) return;
+      APP = normalizeApp(createEmptyApp());
+      saveAll();
+      currentPeriod = 'day';
+      jumpToLatestDate();
+      render();
+      showToast('Данные очищены.');
+    };
   }
-};
 
+  const demoBtn = document.getElementById('demoBtn');
+  if (demoBtn) {
+    demoBtn.onclick = async () => {
+      const ok = await showConfirm('Сбросить все локальные данные и загрузить демо-пример? Все текущие записи будут удалены.', { okLabel: 'Загрузить' });
+      if (!ok) return;
+      APP = normalizeApp(createDemoApp());
+      saveAll();
+      currentPeriod = 'day';
+      jumpToLatestDate();
+      render();
+      showToast('Демо-режим активирован.');
+    };
+  }
 
 }
 
 /* ========= Calculations ========= */
-function calcCommission(d){ // парк
-  const mode = APP.settings.parkMode || 'none';
-  if(mode==='none') return 0;
-  if(mode==='150day'){
-    return ( (d.income||0) > 0 || (d.orders||0) > 0 ) ? 150 : 0;
+function hasFeeActivity(d) {
+  if (!d) return false;
+  return (
+    Number(d.income || 0) > 0 ||
+    Number(d.orders || 0) > 0 ||
+    Number(d.otherIncome || 0) > 0 ||
+    Number(d.tips || 0) > 0
+  );
+}
+
+function applyAutoRent(day) {
+  if (!day || !day.settings) return false;
+  if (!hasFeeActivity(day)) return false;
+  if (Number(day.rent || 0) > 0) return false;
+  const rentDefault = sanitizeRentPerDay(day.settings.rentPerDay, 0);
+  if (rentDefault > 0) {
+    day.rent = rentDefault;
+    return true;
   }
-  if(mode==='15order'){ return (d.orders||0) * 15; }
-  if(mode==='20order'){ return (d.orders||0) * 20; }
-  if(mode==='4pct'){ return (d.income||0) * 0.04; } // с дохода (без чаевых/прочих доходов)
+  return false;
+}
+
+function calcCommission(d){ // парк
+  if (d && d.commissionManual != null) {
+    const manual = Number(d.commissionManual);
+    if (Number.isFinite(manual)) return Math.max(0, Math.round(manual));
+  }
+  const settings = (d && d.settings) ? d.settings : currentSettingsSnapshot();
+  const park = settings.park || {};
+  const mode = park.mode || 'none';
+  if(mode==='none') return 0;
+  if(mode==='day'){
+    return hasFeeActivity(d) ? park.dayFee : 0;
+  }
+  if(mode==='order'){ return (d.orders||0) * park.orderFee; }
+  if(mode==='percent'){ return (d.income||0) * (park.percent/100); } // с дохода (без чаевых/прочих доходов)
   return 0;
 }
 function calcTax(d){
-  const mode = APP.settings.taxMode || 'none';
+  if (d && d.taxManual != null) {
+    const manual = Number(d.taxManual);
+    if (Number.isFinite(manual)) return Math.max(0, Math.round(manual));
+  }
+  const settings = (d && d.settings) ? d.settings : currentSettingsSnapshot();
+  const mode = settings.taxMode || 'none';
   if(mode==='self4') return (d.income||0) * 0.04;
   if(mode==='ip6')   return (d.income||0) * 0.06;
   return 0;
 }
 function calcDay(iso){
-  const d = ensureDay(iso);
+  const d = readDay(iso);
   const gross = (d.income||0) + (d.tips||0) + (d.otherIncome||0);
   const commission = calcCommission(d);
   const tax = calcTax(d);
@@ -334,8 +1016,15 @@ function calcDay(iso){
   return {...d, commission, tax, gross, costs, profit, eff, perHour};
 }
 function sumRange(arr){
-  return arr.reduce((acc,iso)=>{
-    const d = ensureDay(iso);
+  const store = byCar();
+  if (!store) {
+    return {orders:0,income:0,rent:0,fuel:0,tips:0,otherIncome:0,otherExpense:0,fines:0,hours:0,commission:0,tax:0};
+  }
+  let dirty = false;
+  const summary = arr.reduce((acc,iso)=>{
+    const d = store[iso];
+    if(!d) return acc;
+    if (applyAutoRent(d)) dirty = true;
     const c = calcCommission(d);
     const t = calcTax(d);
     acc.orders += Number(d.orders||0);
@@ -351,6 +1040,23 @@ function sumRange(arr){
     acc.tax += t;
     return acc;
   }, {orders:0,income:0,rent:0,fuel:0,tips:0,otherIncome:0,otherExpense:0,fines:0,hours:0,commission:0,tax:0});
+  if (dirty) saveAll();
+  return summary;
+}
+
+function jumpToLatestDate() {
+  const carId = APP.activeCarId;
+  if (!carId) {
+    currentDate = todayISO();
+    return;
+  }
+  const data = APP.dataByCar[carId] || {};
+  const dates = Object.keys(data).sort();
+  if (dates.length) {
+    currentDate = dates[dates.length - 1];
+  } else {
+    currentDate = todayISO();
+  }
 }
 
 /* ========= Timeline chart ========= */
@@ -728,11 +1434,13 @@ function renderReports(){
   if(rMode==='classes'){
     // агрегируем по классам (только где есть данные)
     const map = {};
+    let dirty = false;
     for(const car of APP.cars){
       const data = APP.dataByCar[car.id]||{};
       let sum = {orders:0,income:0,rent:0,fuel:0,tips:0,otherIncome:0,otherExpense:0,fines:0,hours:0,commission:0,tax:0};
       Object.keys(data).forEach(iso=>{
         const d=data[iso];
+        if (applyAutoRent(d)) dirty = true;
         const c = calcCommission(d);
         const t = calcTax(d);
         sum.orders+=d.orders||0; sum.income+=d.income||0; sum.rent+=d.rent||0; sum.fuel+=d.fuel||0;
@@ -749,6 +1457,7 @@ function renderReports(){
         return total>0;
       })
       .map(x=>buildSummaryCard(`Класс: ${x.title}`, x.sum));
+    if (dirty) saveAll();
     reportsBody.innerHTML = parts.length? parts.join('') : '<div class="row">Нет данных для сравнения классов</div>';
     return;
   }
@@ -790,8 +1499,10 @@ navbtns.forEach(n=>n.addEventListener('click',()=>{
 // date
 dateInput.addEventListener('change', (e)=>{
   currentDate = e.target.value || todayISO();
-  ensureDay(currentDate);
-  saveAll();
+  if (APP.activeCarId) {
+    ensureDay(currentDate);
+    saveAll();
+  }
   tabs.forEach(x=>x.classList.remove('active'));
   document.querySelector('.tab[data-period="day"]').classList.add('active');
   currentPeriod='day';
@@ -805,13 +1516,18 @@ document.querySelectorAll('.card[data-edit]').forEach(c=>{
       document.querySelector('.tab[data-period="day"]').classList.add('active');
       currentPeriod='day';
     }
+    if(!APP.activeCarId){
+      showToast('Добавьте авто в настройках, чтобы вносить данные.');
+      return;
+    }
     const field=c.dataset.edit;
     const titles={
       income:'Доход за день', tips:'Чаевые за день', otherIncome:'Прочие доходы за день',
       orders:'Количество заказов', rent:'Аренда за день', fuel:'Топливо за день',
-      otherExpense:'Прочие расходы за день', fines:'Штрафы за день', hours:'Часы за день'
+      otherExpense:'Прочие расходы за день', fines:'Штрафы за день', hours:'Часы за день',
+      commissionManual:'Комиссия парка (ручной ввод)', taxManual:'Налог (ручной ввод)'
     };
-    openModal(field, titles[field]||'Изменить');
+    openDayModal(field, titles[field]||'Изменить');
   });
 });
 // reports tabs
@@ -826,8 +1542,8 @@ rTabs.forEach(rt=>rt.addEventListener('click',()=>{
  // ===== Отчёт по диапазону =====
  rangeBtn.onclick = () => {
    const from = fromDate.value, to = toDate.value;
-   if (!from || !to) { alert('Укажите обе даты'); return; }
-   if (from > to) { alert('Дата начала позже даты окончания'); return; }
+   if (!from || !to) { showToast('Укажите обе даты.'); return; }
+   if (from > to) { showToast('Дата начала позже даты окончания.'); return; }
 
    const arr = []; let cur = new Date(from); const end = new Date(to);
    while (cur <= end) { arr.push(cur.toLocaleDateString('en-CA')); cur.setDate(cur.getDate() + 1); }
@@ -847,26 +1563,55 @@ rTabs.forEach(rt=>rt.addEventListener('click',()=>{
  // Первый рендер
  render();
 
- // ==== Telegram Mini App init (устойчивый вариант) ====
- (function initTelegram() {
-   try {
-     if (window.Telegram && Telegram.WebApp) {
-       Telegram.WebApp.ready();
-       Telegram.WebApp.expand();
-       if (Telegram.WebApp.disableVerticalSwipes) {
-         Telegram.WebApp.disableVerticalSwipes();
-       }
-       // Совместимость старого/нового API подтверждения закрытия
-       if (Telegram.WebApp.enableClosingConfirmation) {
-         Telegram.WebApp.enableClosingConfirmation();
-       } else {
-         Telegram.WebApp.isClosingConfirmationEnabled = true;
-       }
-       console.log('[TaxiPro] Telegram WebApp initialized');
-     } else {
-       console.warn('[TaxiPro] Telegram WebApp не обнаружен');
-     }
-   } catch (e) {
-     console.error('[TaxiPro] Telegram init error:', e);
-   }
- })();
+// ==== Телеграм-специфика и защита от свайпов ====
+(function initTelegram() {
+  const enforceExpand = () => {
+    try { Telegram.WebApp.expand(); } catch (e) {}
+  };
+
+  try {
+    if (window.Telegram && Telegram.WebApp) {
+      Telegram.WebApp.ready();
+      enforceExpand();
+
+      if (Telegram.WebApp.disableVerticalSwipes) {
+        Telegram.WebApp.disableVerticalSwipes();
+      }
+
+      if (Telegram.WebApp.setClosingBehavior) {
+        Telegram.WebApp.setClosingBehavior({ need_confirmation: true });
+      } else if (Telegram.WebApp.enableClosingConfirmation) {
+        Telegram.WebApp.enableClosingConfirmation();
+      } else {
+        Telegram.WebApp.isClosingConfirmationEnabled = true;
+      }
+
+      if (Telegram.WebApp.onEvent) {
+        Telegram.WebApp.onEvent('viewportChanged', (state = {}) => {
+          const collapsed = state.isExpanded === false;
+          const heightShrunk = typeof state.height === 'number'
+            && Telegram.WebApp.viewportStableHeight
+            && state.height + 2 < Telegram.WebApp.viewportStableHeight;
+          if (collapsed || heightShrunk) {
+            enforceExpand();
+            setTimeout(enforceExpand, 120);
+          }
+        });
+      }
+
+      // На всякий случай периодически переоткрываем полноэкранный режим при старте
+      setTimeout(enforceExpand, 150);
+      setTimeout(enforceExpand, 600);
+
+      console.log('[TaxiPro] Telegram WebApp initialized');
+    } else {
+      console.warn('[TaxiPro] Telegram WebApp не обнаружен');
+    }
+  } catch (e) {
+    console.error('[TaxiPro] Telegram init error:', e);
+  }
+})();
+
+// Встроенный контейнер `.content` получает собственный скролл, поэтому
+// дополнительных обработчиков касаний не требуется: Telegram не получает
+// overscroll, а пользователи сохраняют нативные жесты.
