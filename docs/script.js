@@ -6,6 +6,40 @@ const addDays = (iso,delta)=>{const d=new Date(iso);d.setDate(d.getDate()+delta)
 const rangeDays=(end,count)=>{const a=[];for(let i=count-1;i>=0;i--)a.push(addDays(end,-i));return a;}
 const isoToShort = (iso)=>{const d=new Date(iso);return d.toLocaleDateString('ru-RU',{day:'2-digit',month:'2-digit'});}
 
+/* ========= TaxiPro API (Telegram Mini App) ========= */
+const API_BASE = 'https://taxipro-api.onrender.com';
+const tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
+
+async function apiPost(path, body) {
+  try {
+    const res = await fetch(API_BASE + path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {})
+    });
+    return await res.json();
+  } catch (e) {
+    console.warn('[TaxiPro] API error', e);
+    return null;
+  }
+}
+
+(function initTelegramAuth() {
+  if (!tg) {
+    console.log('[TaxiPro] Telegram WebApp не обнаружен — пропускаю авторизацию');
+    return;
+  }
+  try { tg.ready(); tg.expand && tg.expand(); } catch {}
+
+  // 1) апсерт пользователя в БД (Render + Mongo)
+  apiPost('/api/auth/telegram', { initData: tg.initData });
+
+  // 2) хартбит активности каждые 30 сек
+  setInterval(() => {
+    apiPost('/api/ping', { initData: tg.initData, screen: 'app' });
+  }, 30_000);
+})();
+
 /* ========= Storage schema =========
 {
   activeCarId: string,
