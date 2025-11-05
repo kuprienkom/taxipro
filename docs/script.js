@@ -40,7 +40,7 @@ async function flushCloudQueue(initData) {
   if (!q.length) return;
 
   try {
-    const res = await fetch('https://taxipro-api.onrender.com/api/shifts/bulk', {
+    const res = await fetch(API_BASE + '/api/shifts/bulk', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -350,7 +350,7 @@ function normalizeApp(app){
 
 function currentSettingsSnapshot(){
   const car = APP.cars.find(c => c.id === APP.activeCarId);
-  return {
+   return {
     park: { ...APP.settings.park },
     taxMode: APP.settings.taxMode,
     rentPerDay: sanitizeRentPerDay(car && car.rentPerDay)
@@ -372,7 +372,6 @@ let APP = normalizeApp(initialAppState);
 if (firstLaunchResetPerformed) {
   saveAll();
 }
-
 let currentScreen='home';
 let currentPeriod='day';
 let currentDate=todayISO();
@@ -957,7 +956,11 @@ function renderCars(){
       saveAll();
       render();
       showToast('Авто удалено.');
+      let demoIds = JSON.parse(localStorage.getItem('taxiDemoCarIds') || '[]');
+demoIds = demoIds.filter(x => x !== id);
+localStorage.setItem('taxiDemoCarIds', JSON.stringify(demoIds));
     };
+    
   });
   carsContainer.querySelectorAll('button[data-edit]').forEach(b=>{
     b.onclick=()=>{ const car=APP.cars.find(x=>x.id===b.dataset.edit); if(car) openCarEdit(car); };
@@ -986,6 +989,7 @@ function performAppReset(options = {}) {
   const { silent = false } = options;
   APP = normalizeApp(createEmptyApp());
   saveAll();
+  localStorage.removeItem('taxiDemoCarIds');
   currentPeriod = 'day';
   jumpToLatestDate();
   resetUiInputs();
@@ -1096,6 +1100,19 @@ function bindSettingsRadios(){
       resetUiInputs();
       render();
       showToast('Демо-режим активирован.');
+      // помечаем активную демо-машину, чтобы её не синкать в облако
+(function markDemoCar(){
+  try {
+    const id = APP.activeCarId;
+    if (!id) return;
+    const list = JSON.parse(localStorage.getItem('taxiDemoCarIds') || '[]');
+    if (!list.includes(id)) {
+      list.push(id);
+      localStorage.setItem('taxiDemoCarIds', JSON.stringify(list));
+    }
+  } catch {}
+})();
+
     };
   }
 
@@ -1215,6 +1232,12 @@ async function syncShiftToCloud(dateISO) {
 
   const car = APP.cars.find(c => c.id === APP.activeCarId);
   if (!car) return;
+  // Пропускаем синк для демо-машин
+try {
+  const demoIds = JSON.parse(localStorage.getItem('taxiDemoCarIds') || '[]');
+  if (demoIds.includes(car.id)) return;
+} catch {}
+
 
   // --- ДОБАВЛЕНО: существует ли локальная запись дня
   const dayStore = APP.dataByCar?.[car.id] || {};
@@ -1265,7 +1288,7 @@ async function syncShiftToCloud(dateISO) {
   };
 
   try {
-    const res = await fetch('https://taxipro-api.onrender.com/api/shifts', {
+    const res = await fetch(API_BASE + '/api/shifts', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
