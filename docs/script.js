@@ -19,6 +19,47 @@ async function apiPost(path, body) {
     return await r.json();
   } catch (e) { console.warn('[TaxiPro] API error', e); return null; }
 }
+/* ========= Cloud queue (offline) ========= */
+const QUEUE_KEY = 'taxiCloudQueueV1';
+
+function loadQueue() {
+  try { return JSON.parse(localStorage.getItem(QUEUE_KEY) || '[]'); }
+  catch { return []; }
+}
+function saveQueue(q) {
+  localStorage.setItem(QUEUE_KEY, JSON.stringify(q));
+}
+function enqueue(item) {
+  const q = loadQueue();
+  q.push({ ...item, enqueuedAt: Date.now() });
+  saveQueue(q);
+  console.log('⏸ queued shift:', item.date, item.carId);
+}
+async function flushCloudQueue(initData) {
+  const q = loadQueue();
+  if (!q.length) return;
+
+  try {
+    const res = await fetch('https://taxipro-api.onrender.com/api/shifts/bulk', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Telegram-Init-Data': initData || (window.Telegram?.WebApp?.initData || '')
+      },
+      body: JSON.stringify({ items: q })
+    });
+    const data = await res.json();
+    if (res.ok && data?.ok) {
+      console.log('☁️ bulk flushed', data);
+      saveQueue([]); // очистили
+      showToast && showToast('Данные синхронизированы.');
+    } else {
+      console.warn('bulk flush failed', data);
+    }
+  } catch (e) {
+    console.warn('bulk flush error', e);
+  }
+}
 
 // Ждём появления Telegram.WebApp (до 5 сек) и только потом авторизуемся
 (function waitForTelegramAndAuth() {
@@ -39,9 +80,12 @@ async function apiPost(path, body) {
     try { tg.ready(); tg.expand && tg.expand(); } catch {}
 
     // 1) апсерт пользователя + сохранение userId для облачной синхронизации
-    apiPost('/api/auth/telegram', { initData: tg.initData }).then((r) => {
-      if (r && r.userId) localStorage.setItem('userId', String(r.userId));
-    });
+   apiPost('/api/auth/telegram', { initData: tg.initData }).then((r) => {
+  if (r && r.userId) localStorage.setItem('userId', String(r.userId));
+  // догружаем очередь (если что-то висело офлайн)
+  flushCloudQueue(tg.initData);
+});
+
 
     // 2) хартбит активности
     setInterval(() => {
@@ -1162,17 +1206,17 @@ function jumpToLatestDate() {
   }
 }
 
-/* ========= ДОБАВЛЕНО: отправка смены в облако (версия с carId) ========= */
+/* ========= Отправка смены в облако (с офлайн-очередью) ========= */
 async function syncShiftToCloud(dateISO) {
   const tg = window.Telegram?.WebApp;
-  if (!tg?.initData) return; // Только внутри Telegram Mini App
+  if (!tg?.initData) return;                 // Только в Mini App
   const userId = localStorage.getItem('userId');
   if (!userId) return;
 
-  const carId = APP?.activeCarId; // <-- важно для нескольких авто
-  if (!carId) return;
+  const car = APP.cars.find(c => c.id === APP.activeCarId);
+  if (!car) return;
 
-  // Собираем актуальные данные дня (как сейчас считает UI)
+  // Собираем текущие данные дня
   const d = calcDay(dateISO);
   const payload = {
     orders: Number(d.orders || 0),
@@ -1189,6 +1233,14 @@ async function syncShiftToCloud(dateISO) {
     settings: d.settings || {}
   };
 
+  const body = {
+    carId: car.id,
+    carName: car.name || null,
+    carClass: car.cls || null,
+    date: dateISO,
+    payload
+  };
+
   try {
     const res = await fetch('https://taxipro-api.onrender.com/api/shifts', {
       method: 'POST',
@@ -1196,15 +1248,22 @@ async function syncShiftToCloud(dateISO) {
         'Content-Type': 'application/json',
         'X-Telegram-Init-Data': tg.initData
       },
-      body: JSON.stringify({ carId, date: dateISO, payload }) // <-- ПЕРЕДАЁМ carId
+      body: JSON.stringify(body)
     });
     const data = await res.json();
     console.log('☁️ save shift', res.status, data);
+
+    // если сервер ответил ошибкой — отправим в очередь
+    if (!res.ok || !data?.ok) {
+      enqueue(body);
+    }
   } catch (e) {
-    console.warn('cloud save error', e);
+    // сеть/сервер недоступны — кладём в очередь
+    enqueue(body);
   }
 }
 /* ========= /конец блока ========= */
+
 
 /* ========= Timeline chart ========= */
 function renderTimeline(values, labels, dates){
