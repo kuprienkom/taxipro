@@ -873,8 +873,14 @@ carEditSave.onclick=()=>{
   if(carEditRent.value!=='' && carEditRent.value!=null){ car.rentPerDay=safeMoney(carEditRent.value); }
   saveAll();
   // после изменения параметров авто — зафиксируем updatedAt текущего дня, чтобы LWW учёл локальные изменения логики
-  const d = readDay(currentDate); if (d) { d.updatedAt = new Date().toISOString(); saveAll(); }
+ const d = ensureDay(currentDate);
+if (d) {
+  // 👇 фикс: обновляем снапшот настроек с новым rentPerDay и т.п.
+  d.settings = currentSettingsSnapshot();
+  d.updatedAt = new Date().toISOString();
+  saveAll();
   syncShiftToCloud(currentDate);
+}
   closeCarEdit();
   render();
 };
@@ -996,10 +1002,24 @@ function performAppReset(options = {}) {
 /* ========= Settings (commission & tax) ========= */
 function bindSettingsRadios(){
   const park = APP.settings.park;
-  document.querySelectorAll('input[name="park"]').forEach(r=>{
-    r.checked = (park.mode===r.value);
-    r.onchange = ()=>{ park.mode=r.value; saveAll(); syncShiftToCloud(currentDate); render(); };
-  });
+ document.querySelectorAll('input[name="park"]').forEach(r=>{
+  r.checked = (park.mode===r.value);
+  r.onchange = ()=>{
+    park.mode = r.value;
+    saveAll();
+
+    // 👇 фикс: снапшот настроек в текущий день
+    const d = ensureDay(currentDate);
+    if (d) {
+      d.settings = currentSettingsSnapshot();
+      d.updatedAt = new Date().toISOString();
+      saveAll();
+      syncShiftToCloud(currentDate);
+    }
+    render();
+  };
+});
+
 
   const bindParkInput = (input, key, options = {}) => {
     if(!input) return;
@@ -1029,13 +1049,21 @@ function bindSettingsRadios(){
       sanitize,
       inputMode,
       onSave:(value)=>{
-        park[key] = value;
-        input.value = display(value);
-        saveAll();
-        const d = readDay(currentDate); if (d) d.updatedAt = new Date().toISOString();
-        syncShiftToCloud(currentDate);
-        render();
-      }
+  park[key] = value;
+  input.value = display(value);
+  saveAll();
+
+  // 👇 фикс: снапшот настроек в текущий день
+  const d = ensureDay(currentDate);
+  if (d) {
+    d.settings = currentSettingsSnapshot();
+    d.updatedAt = new Date().toISOString();
+    saveAll();
+    syncShiftToCloud(currentDate);
+  }
+  render();
+}
+
     }));
   };
 
@@ -1067,9 +1095,23 @@ function bindSettingsRadios(){
   });
 
   document.querySelectorAll('input[name="tax"]').forEach(r=>{
-    r.checked = (APP.settings.taxMode===r.value);
-    r.onchange = ()=>{ APP.settings.taxMode=r.value; saveAll(); const d=readDay(currentDate); if(d) d.updatedAt=new Date().toISOString(); syncShiftToCloud(currentDate); render(); };
-  });
+  r.checked = (APP.settings.taxMode===r.value);
+  r.onchange = ()=>{
+    APP.settings.taxMode = r.value;
+    saveAll();
+
+    // 👇 фикс: снапшот настроек в текущий день
+    const d = ensureDay(currentDate);
+    if (d) {
+      d.settings = currentSettingsSnapshot();
+      d.updatedAt = new Date().toISOString();
+      saveAll();
+      syncShiftToCloud(currentDate);
+    }
+    render();
+  };
+});
+
 
   const resetBtn = document.getElementById('resetBtn');
   if (resetBtn) {
