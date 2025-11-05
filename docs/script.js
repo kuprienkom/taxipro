@@ -1159,35 +1159,46 @@ function jumpToLatestDate() {
 }
 
 /* ========= ДОБАВЛЕНО: отправка смены в облако ========= */
-function syncShiftToCloud(dateISO) {
+async function syncShiftToCloud(dateISO) {
+  const tg = window.Telegram?.WebApp;
+  if (!tg?.initData) return; // Только внутри Telegram Mini App
+  const userId = localStorage.getItem('userId');
+  if (!userId) return;
+
+  // Собираем актуальные данные дня (как сейчас считает UI)
+  const d = calcDay(dateISO);
+  const payload = {
+    orders: Number(d.orders || 0),
+    income: Number(d.income || 0),
+    rent: Number(d.rent || 0),
+    fuel: Number(d.fuel || 0),
+    tips: Number(d.tips || 0),
+    otherIncome: Number(d.otherIncome || 0),
+    otherExpense: Number(d.otherExpense || 0),
+    fines: Number(d.fines || 0),
+    hours: Number(d.hours || 0),
+    commissionManual: d.commissionManual ?? null,
+    taxManual: d.taxManual ?? null,
+    settings: d.settings || {}
+  };
+
   try {
-    const userId = localStorage.getItem('userId');
-    if (!userId) return;
-    const d = calcDay(dateISO);
-    const payload = {
-      userId: Number(userId),
-      date: dateISO,
-      income: Number(d.income || 0),
-      tipsExtra: Number(d.tips || 0),
-      rent: Number(d.rent || 0),
-      fuel: Number(d.fuel || 0),
-      other: Number(d.otherExpense || 0),
-      fines: Number(d.fines || 0),
-      hours: Number(d.hours || 0),
-      profit: Number(d.profit || 0)
-    };
-    fetch('https://taxipro-api.onrender.com/api/shifts', {
+    const res = await fetch('https://taxipro-api.onrender.com/api/shifts', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    })
-      .then(r => r.json())
-      .then(() => console.log('☁️ Смена сохранена в облаке', payload))
-      .catch(console.error);
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Telegram-Init-Data': tg.initData
+      },
+      body: JSON.stringify({ date: dateISO, payload })
+    });
+    const data = await res.json();
+    console.log('☁️ save shift', res.status, data);
   } catch (e) {
-    console.error('Cloud sync error:', e);
+    console.warn('cloud save error', e);
   }
 }
+/* ========= /конец блока ========= */
+
 
 /* ========= Timeline chart ========= */
 function renderTimeline(values, labels, dates){
