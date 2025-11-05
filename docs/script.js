@@ -1697,14 +1697,6 @@ if (rangeBtn) {
         Telegram.WebApp.disableVerticalSwipes();
       }
 
-      if (Telegram.WebApp.setClosingBehavior) {
-        Telegram.WebApp.setClosingBehavior({ need_confirmation: true });
-      } else if (Telegram.WebApp.enableClosingConfirmation) {
-        Telegram.WebApp.enableClosingConfirmation();
-      } else {
-        Telegram.WebApp.isClosingConfirmationEnabled = true;
-      }
-
       if (Telegram.WebApp.onEvent) {
         Telegram.WebApp.onEvent('viewportChanged', (state = {}) => {
           const collapsed = state.isExpanded === false;
