@@ -9,54 +9,58 @@ const isoToShort = (iso)=>{const d=new Date(iso);return d.toLocaleDateString('ru
 /* ========= Telegram detection + auth (robust) ========= */
 const API_BASE = 'https://taxipro-api.onrender.com';
 
+
 async function apiPost(path, body) {
-  try {
-    const r = await fetch(API_BASE + path, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body || {})
-    });
-    return await r.json();
-  } catch (e) { console.warn('[TaxiPro] API error', e); return null; }
+try {
+const r = await fetch(API_BASE + path, {
+method: 'POST',
+headers: { 'Content-Type': 'application/json' },
+body: JSON.stringify(body || {})
+});
+return await r.json();
+} catch (e) { console.warn('[TaxiPro] API error', e); return null; }
 }
+
 
 // Ждём появления Telegram.WebApp (до 5 сек) и только потом авторизуемся
 (function waitForTelegramAndAuth() {
-  const startedAt = Date.now();
+const startedAt = Date.now();
 
-  function tryInit() {
-    const tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
 
-    if (!tg) {
-      if (Date.now() - startedAt < 5000) {
-        return setTimeout(tryInit, 100); // подождать ещё
-      } else {
-        // Отладочный маяк: Telegram не появился
-        fetch(`${API_BASE}/api/ping-test?from=no-tg&v=auth-wait5s`).catch(()=>{});
-        console.log('[TaxiPro] Telegram.WebApp не найден — страница, вероятно, не в Mini App');
-        return;
-      }
-    }
+function tryInit() {
+const tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
 
-    // Отладочный маяк: Telegram найден
-    fetch(`${API_BASE}/api/ping-test?from=tg-ok&v=auth-wait5s`).catch(()=>{});
 
-    try { tg.ready(); tg.expand && tg.expand(); } catch {}
+if (!tg) {
+if (Date.now() - startedAt < 5000) {
+return setTimeout(tryInit, 100); // подождать ещё
+} else {
+console.log('[TaxiPro] Telegram.WebApp не найден — страница, вероятно, не в Mini App');
+return;
+}
+}
 
-    // 1) апсерт пользователя
-    apiPost('/api/auth/telegram', { initData: tg.initData });
 
-    // 2) хартбит активности
-    setInterval(() => {
-      apiPost('/api/ping', { initData: tg.initData, screen: 'app' });
-    }, 30_000);
-  }
+try { tg.ready(); tg.expand && tg.expand(); } catch {}
 
-  // Запускаем сразу и на DOMContentLoaded на всякий случай
-  tryInit();
-  document.addEventListener('DOMContentLoaded', tryInit, { once: true });
+
+// 1) апсерт пользователя + сохранение userId для облачной синхронизации
+apiPost('/api/auth/telegram', { initData: tg.initData }).then((r) => {
+if (r && r.userId) localStorage.setItem('userId', String(r.userId));
+});
+
+
+// 2) хартбит активности
+setInterval(() => {
+apiPost('/api/ping', { initData: tg.initData, screen: 'app' });
+}, 30_000);
+}
+
+
+// Запускаем сразу и на DOMContentLoaded на всякий случай
+tryInit();
+document.addEventListener('DOMContentLoaded', tryInit, { once: true });
 })();
-
 
 /* ========= Storage schema =========
 {
@@ -1686,36 +1690,7 @@ if (rangeBtn) {
     if (window.Telegram && Telegram.WebApp) {
       Telegram.WebApp.ready();
 
-      /* === ДОБАВЛЕНО: авторизация Telegram + лог входа === */
-      const tg = window.Telegram.WebApp;
-      const user = tg.initDataUnsafe?.user;
-
-      if (user) {
-        fetch('https://taxipro-api.onrender.com/api/auth/telegram', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            initData: tg.initData,
-            user
-          })
-        })
-          .then(r => r.json())
-          .then(d => {
-            if (d?.userId) {
-              localStorage.setItem('userId', String(d.userId));
-              console.log("✅ TaxiPro Cloud: пользователь авторизован", d.userId);
-
-              fetch('https://taxipro-api.onrender.com/api/ping', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ userId: d.userId, screen: 'home' })
-              });
-            }
-          })
-          .catch(console.error);
-      }
-      /* === КОНЕЦ вставки авторизации === */
-
+     
       enforceExpand();
 
       if (Telegram.WebApp.disableVerticalSwipes) {
