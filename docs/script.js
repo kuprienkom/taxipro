@@ -6,9 +6,10 @@ const addDays = (iso,delta)=>{const d=new Date(iso);d.setDate(d.getDate()+delta)
 const rangeDays=(end,count)=>{const a=[];for(let i=count-1;i>=0;i--)a.push(addDays(end,-i));return a;}
 const isoToShort = (iso)=>{const d=new Date(iso);return d.toLocaleDateString('ru-RU',{day:'2-digit',month:'2-digit'});} 
 
-/* ========= Telegram detection + auth (robust) ========= */
+/* ========= Telegram + API ========= */
 const API_BASE = 'https://taxipro-api.onrender.com';
 
+/* ---- Общие POST ---- */
 async function apiPost(path, body) {
   try {
     const r = await fetch(API_BASE + path, {
@@ -19,22 +20,24 @@ async function apiPost(path, body) {
     return await r.json();
   } catch (e) { console.warn('[TaxiPro] API error', e); return null; }
 }
+
 /* ========= Cloud queue (offline) ========= */
 const QUEUE_KEY = 'taxiCloudQueueV1';
-
-function loadQueue() {
-  try { return JSON.parse(localStorage.getItem(QUEUE_KEY) || '[]'); }
-  catch { return []; }
-}
-function saveQueue(q) {
-  localStorage.setItem(QUEUE_KEY, JSON.stringify(q));
-}
+function loadQueue() { try { return JSON.parse(localStorage.getItem(QUEUE_KEY) || '[]'); } catch { return []; } }
+function saveQueue(q) { localStorage.setItem(QUEUE_KEY, JSON.stringify(q)); }
 function enqueue(item) {
   const q = loadQueue();
   q.push({ ...item, enqueuedAt: Date.now() });
   saveQueue(q);
   console.log('⏸ queued shift:', item.date, item.carId);
 }
+
+/* ========= Cloud meta (инкрементальная синхронизация) ========= */
+const CLOUD_META_KEY = 'taxiCloudMetaV1'; // { lastSyncAt: ISO }
+function loadCloudMeta() { try { return JSON.parse(localStorage.getItem(CLOUD_META_KEY) || '{}'); } catch { return {}; } }
+function saveCloudMeta(meta) { localStorage.setItem(CLOUD_META_KEY, JSON.stringify(meta || {})); }
+
+/* ========= Telegram detection + auth (robust) ========= */
 async function flushCloudQueue(initData) {
   const q = loadQueue();
   if (!q.length) return;
@@ -51,6 +54,20 @@ async function flushCloudQueue(initData) {
     const data = await res.json();
     if (res.ok && data?.ok) {
       console.log('☁️ bulk flushed', data);
+      // обновим локальные updatedAt по ответу сервера
+      try {
+        if (Array.isArray(data.results)) {
+          for (const r of data.results) {
+            if (r.ok && r.carId && r.date && r.updatedAt) {
+              const store = APP.dataByCar?.[r.carId];
+              if (store && store[r.date]) {
+                store[r.date].updatedAt = r.updatedAt;
+              }
+            }
+          }
+          saveAll();
+        }
+      } catch {}
       saveQueue([]); // очистили
       showToast && showToast('Данные синхронизированы.');
     } else {
@@ -80,12 +97,15 @@ async function flushCloudQueue(initData) {
     try { tg.ready(); tg.expand && tg.expand(); } catch {}
 
     // 1) апсерт пользователя + сохранение userId для облачной синхронизации
-   apiPost('/api/auth/telegram', { initData: tg.initData }).then((r) => {
-  if (r && r.userId) localStorage.setItem('userId', String(r.userId));
-  // догружаем очередь (если что-то висело офлайн)
-  flushCloudQueue(tg.initData);
-});
-
+    apiPost('/api/auth/telegram', { initData: tg.initData }).then(async (r) => {
+      if (r && r.userId) localStorage.setItem('userId', String(r.userId));
+      // офлайн-очередь
+      await flushCloudQueue(tg.initData);
+      // инкрементальная подтяжка свежих смен с сервера
+      await pullFromCloudSince(tg.initData);
+      // периодическая подтяжка
+      setInterval(() => pullFromCloudSince(tg.initData), 90_000);
+    });
 
     // 2) хартбит активности
     setInterval(() => {
@@ -107,7 +127,7 @@ async function flushCloudQueue(initData) {
     taxMode:'none'|'self4'|'ip6'
   },
   dataByCar: {
-    [carId]: { [dateISO]: {orders,income,rent,fuel,tips,otherIncome,otherExpense,fines,hours,settings:{park:{...},taxMode}} }
+    [carId]: { [dateISO]: {orders,income,rent,fuel,tips,otherIncome,otherExpense,fines,hours,settings:{park:{...},taxMode}, commissionManual, taxManual, updatedAt?} }
   }
 }
 ==================================== */
@@ -115,6 +135,7 @@ const LS_KEY = 'taxiAnalyzerV13';
 const FIRST_LAUNCH_RESET_KEY = `${LS_KEY}::firstLaunchResetDone`;
 let firstLaunchResetPerformed = false;
 
+/* ========= App factories ========= */
 function createEmptyApp() {
   return {
     activeCarId: null,
@@ -143,7 +164,8 @@ function createDemoApp() {
       otherIncome: 0,
       otherExpense: (i % 6 === 0) ? 200 : 0,
       fines: 0,
-      hours: 8 + (i % 3)
+      hours: 8 + (i % 3),
+      updatedAt: new Date().toISOString()
     };
   }
 
@@ -159,7 +181,8 @@ function createDemoApp() {
       otherIncome: (i % 10 === 0) ? 500 : 0,
       otherExpense: (i % 9 === 0) ? 300 : 0,
       fines: (i % 14 === 0) ? 500 : 0,
-      hours: 9 + (i % 4)
+      hours: 9 + (i % 4),
+      updatedAt: new Date().toISOString()
     };
   }
 
@@ -175,7 +198,8 @@ function createDemoApp() {
       otherIncome: (i % 5 === 0) ? 400 : 0,
       otherExpense: (i % 4 === 0) ? 200 : 0,
       fines: 0,
-      hours: 8 + (i % 3)
+      hours: 8 + (i % 3),
+      updatedAt: new Date().toISOString()
     };
   }
 
@@ -190,6 +214,7 @@ function createDemoApp() {
   };
 }
 
+/* ========= Load/save ========= */
 function loadAll() {
   const raw = localStorage.getItem(LS_KEY);
   if (!raw) return createEmptyApp();
@@ -200,18 +225,14 @@ function loadAll() {
     return createEmptyApp();
   }
 }
+function saveAll() { localStorage.setItem(LS_KEY, JSON.stringify(APP)); }
 
-function saveAll() {
-  localStorage.setItem(LS_KEY, JSON.stringify(APP));
-}
-
+/* ========= Sanitizers ========= */
 const PARK_MODES = new Set(['none','day','order','percent']);
 const TAX_MODES = new Set(['none','self4','ip6']);
 const DAY_FIELDS = ['orders','income','rent','fuel','tips','otherIncome','otherExpense','fines','hours'];
 
-function sanitizeTaxMode(mode) {
-  return TAX_MODES.has(mode) ? mode : 'none';
-}
+function sanitizeTaxMode(mode) { return TAX_MODES.has(mode) ? mode : 'none'; }
 
 function sanitizeParkConfig(raw = {}, defaults = {}) {
   const merged = { ...defaults, ...raw };
@@ -270,6 +291,7 @@ function normalizeDayEntry(entry, fallbackSnapshot) {
   day.settings = sanitizeSettingsSnapshot(entry && entry.settings, fallbackSnapshot);
   day.commissionManual = sanitizeOptionalMoney(day.commissionManual);
   day.taxManual = sanitizeOptionalMoney(day.taxManual);
+  if (!day.updatedAt) day.updatedAt = new Date().toISOString();
   return day;
 }
 
@@ -278,29 +300,15 @@ function clampTank(value) {
   if (!Number.isFinite(num)) return 50;
   return Math.max(20, Math.min(120, Math.round(num)));
 }
-
-function safeMoney(value) {
-  const num = Number(value);
-  return Number.isFinite(num) ? Math.max(0, Math.round(num)) : 0;
-}
-
-function sanitizeRentPerDay(value, fallback = 0) {
-  const source = value != null ? value : fallback;
-  return safeMoney(source);
-}
+function safeMoney(value) { const num = Number(value); return Number.isFinite(num) ? Math.max(0, Math.round(num)) : 0; }
+function sanitizeRentPerDay(value, fallback = 0) { const source = value != null ? value : fallback; return safeMoney(source); }
 
 function normalizeApp(app){
   app = app || {};
   app.settings = app.settings || {};
 
   if (!app.settings.park && app.settings.parkMode) {
-    const map = {
-      none: 'none',
-      '150day': 'day',
-      '15order': 'order',
-      '20order': 'order',
-      '4pct': 'percent'
-    };
+    const map = { none: 'none', '150day': 'day', '15order': 'order', '20order': 'order', '4pct': 'percent' };
     app.settings.park = { mode: map[app.settings.parkMode] || 'none' };
   }
 
@@ -337,6 +345,8 @@ function normalizeApp(app){
     };
     const days = app.dataByCar[car.id] || {};
     Object.keys(days).forEach(dateISO => {
+      // если в записи не было updatedAt — добавим
+      if (!days[dateISO]?.updatedAt) days[dateISO].updatedAt = new Date().toISOString();
       days[dateISO] = normalizeDayEntry(days[dateISO], defaultsSnapshot);
     });
   });
@@ -350,13 +360,14 @@ function normalizeApp(app){
 
 function currentSettingsSnapshot(){
   const car = APP.cars.find(c => c.id === APP.activeCarId);
-   return {
+  return {
     park: { ...APP.settings.park },
     taxMode: APP.settings.taxMode,
     rentPerDay: sanitizeRentPerDay(car && car.rentPerDay)
   };
 }
 
+/* ========= Init state ========= */
 const storedResetMarker = localStorage.getItem(FIRST_LAUNCH_RESET_KEY);
 let initialAppState;
 if (storedResetMarker === 'done') {
@@ -369,13 +380,12 @@ if (storedResetMarker === 'done') {
 
 /* ========= State ========= */
 let APP = normalizeApp(initialAppState);
-if (firstLaunchResetPerformed) {
-  saveAll();
-}
+if (firstLaunchResetPerformed) { saveAll(); }
 let currentScreen='home';
 let currentPeriod='day';
 let currentDate=todayISO();
 
+/* ========= Helpers to access store ========= */
 const byCar = () => {
   if (!APP.activeCarId) return null;
   if (!APP.dataByCar[APP.activeCarId]) APP.dataByCar[APP.activeCarId] = {};
@@ -385,7 +395,7 @@ function getDayData(iso, create=false){
   const store = byCar();
   if (!store) {
     const snapshot = cloneSnapshot(currentSettingsSnapshot());
-    return {orders:0,income:0,rent:0,fuel:0,tips:0,otherIncome:0,otherExpense:0,fines:0,hours:0,commissionManual:null,taxManual:null,settings:snapshot};
+    return {orders:0,income:0,rent:0,fuel:0,tips:0,otherIncome:0,otherExpense:0,fines:0,hours:0,commissionManual:null,taxManual:null,settings:snapshot,updatedAt:new Date().toISOString()};
   }
   let d = store[iso];
   if (d) {
@@ -394,16 +404,13 @@ function getDayData(iso, create=false){
   }
   const snapshot = cloneSnapshot(currentSettingsSnapshot());
   if (!create) {
-    return {orders:0,income:0,rent:0,fuel:0,tips:0,otherIncome:0,otherExpense:0,fines:0,hours:0,commissionManual:null,taxManual:null,settings:snapshot};
+    return {orders:0,income:0,rent:0,fuel:0,tips:0,otherIncome:0,otherExpense:0,fines:0,hours:0,commissionManual:null,taxManual:null,settings:snapshot,updatedAt:new Date().toISOString()};
   }
-  d = {orders:0,income:0,rent:0,fuel:0,tips:0,otherIncome:0,otherExpense:0,fines:0,hours:0,commissionManual:null,taxManual:null,settings:snapshot};
+  d = {orders:0,income:0,rent:0,fuel:0,tips:0,otherIncome:0,otherExpense:0,fines:0,hours:0,commissionManual:null,taxManual:null,settings:snapshot,updatedAt:new Date().toISOString()};
   store[iso] = d;
   return d;
 }
-const ensureDay = (iso) => {
-  if (!APP.activeCarId) return null;
-  return getDayData(iso, true);
-};
+const ensureDay = (iso) => { if (!APP.activeCarId) return null; return getDayData(iso, true); };
 const readDay = (iso) => getDayData(iso, false);
 
 /* ========= DOM refs ========= */
@@ -460,14 +467,13 @@ const confirmCancel = document.getElementById('confirmCancel');
 const confirmOk = document.getElementById('confirmOk');
 let confirmKeyHandler = null;
 
+/* ========= UI helpers ========= */
 function showToast(message, duration = 2600) {
   if (!toastEl) return;
   toastEl.textContent = message;
   toastEl.classList.add('show');
   if (toastTimer) clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => {
-    toastEl.classList.remove('show');
-  }, duration);
+  toastTimer = setTimeout(() => { toastEl.classList.remove('show'); }, duration);
 }
 
 function showConfirm(message, options = {}) {
@@ -483,31 +489,19 @@ function showConfirm(message, options = {}) {
       confirmOk.onclick = null;
       confirmCancel.onclick = null;
       confirmBg.removeEventListener('click', onBgClick);
-      if (confirmKeyHandler) {
-        document.removeEventListener('keydown', confirmKeyHandler);
-        confirmKeyHandler = null;
-      }
+      if (confirmKeyHandler) { document.removeEventListener('keydown', confirmKeyHandler); confirmKeyHandler = null; }
       resolve(result);
     };
 
-    const onBgClick = (e) => {
-      if (e.target === confirmBg) cleanup(false);
-    };
+    const onBgClick = (e) => { if (e.target === confirmBg) cleanup(false); };
 
     confirmOk.onclick = () => cleanup(true);
     confirmCancel.onclick = () => cleanup(false);
     confirmBg.addEventListener('click', onBgClick);
 
-    confirmKeyHandler = (e) => {
-      if (e.key === 'Escape') {
-        cleanup(false);
-      }
-    };
+    confirmKeyHandler = (e) => { if (e.key === 'Escape') cleanup(false); };
     document.addEventListener('keydown', confirmKeyHandler);
-
-    setTimeout(() => {
-      confirmOk.focus();
-    }, 0);
+    setTimeout(() => { confirmOk.focus(); }, 0);
   });
 }
 
@@ -540,10 +534,7 @@ const DAY_MONEY_FIELDS = new Set(['income','otherIncome','tips','rent','fuel','o
 const quickLabelRub = (val) => `+${fmt(val)} ₽`;
 const quickLabelPercent = (val) => `+${val}%`;
 
-function defaultParse(raw){
-  const num = Number(raw);
-  return Number.isFinite(num) ? num : 0;
-}
+function defaultParse(raw){ const num = Number(raw); return Number.isFinite(num) ? num : 0; }
 
 function renderQuickFromContext(context){
   const values = context.quick || [];
@@ -590,21 +581,12 @@ function openModal(context){
   modalTitle.textContent = modalContext.title;
   modalLabel.textContent = modalContext.label;
   modalInput.type = modalContext.inputType || 'number';
-  if (modalContext.min != null) modalInput.min = modalContext.min;
-  else modalInput.removeAttribute('min');
-  if (modalContext.max != null) modalInput.max = modalContext.max;
-  else modalInput.removeAttribute('max');
+  if (modalContext.min != null) modalInput.min = modalContext.min; else modalInput.removeAttribute('min');
+  if (modalContext.max != null) modalInput.max = modalContext.max; else modalInput.removeAttribute('max');
   modalInput.step = modalContext.step != null ? modalContext.step : 1;
-  if (modalContext.inputMode) {
-    modalInput.setAttribute('inputmode', modalContext.inputMode);
-  } else {
-    modalInput.removeAttribute('inputmode');
-  }
-  if (modalContext.placeholder != null) {
-    modalInput.placeholder = modalContext.placeholder;
-  } else {
-    modalInput.placeholder = '0';
-  }
+  if (modalContext.inputMode) { modalInput.setAttribute('inputmode', modalContext.inputMode); } else { modalInput.removeAttribute('inputmode'); }
+  modalInput.placeholder = (modalContext.placeholder != null) ? modalContext.placeholder : '0';
+
   const hasNullValue = modalContext.allowNull && modalContext.value == null;
   const initialRaw = modalContext.value != null ? modalContext.value : 0;
   if (hasNullValue) {
@@ -619,18 +601,10 @@ function openModal(context){
   modalInput.select();
 }
 
-function closeModal(){
-  modalBg.classList.remove('show');
-  modalContext=null;
-}
+function closeModal(){ modalBg.classList.remove('show'); modalContext=null; }
 btnCancel.onclick=closeModal;
-modalBg.addEventListener('pointerdown',e=>{
-  if(e.target===modalBg) closeModal();
-});
-modalBg.addEventListener('click',e=>{
-  if(performance.now()-modalOpenedAt<200) return;
-  if(e.target===modalBg) closeModal();
-});
+modalBg.addEventListener('pointerdown',e=>{ if(e.target===modalBg) closeModal(); });
+modalBg.addEventListener('click',e=>{ if(performance.now()-modalOpenedAt<200) return; if(e.target===modalBg) closeModal(); });
 btnSave.onclick=()=>{
   if(!modalContext) return;
   const context = modalContext;
@@ -655,11 +629,9 @@ btnSave.onclick=()=>{
   if (context.onSave) context.onSave(value);
 };
 
+/* ========= Open Day modal ========= */
 function openDayModal(field, title){
-  if (!APP.activeCarId) {
-    showToast('Добавьте авто в настройках, чтобы вносить данные.');
-    return;
-  }
+  if (!APP.activeCarId) { showToast('Добавьте авто в настройках, чтобы вносить данные.'); return; }
   const day = ensureDay(currentDate);
   const manualFields = new Set(['commissionManual','taxManual']);
   const isManual = manualFields.has(field);
@@ -708,34 +680,22 @@ function openDayModal(field, title){
     allowNull: isManual,
     placeholder,
     onSave:(value)=>{
-      if (value == null && isManual) {
-        day[field] = null;
-      } else {
-        day[field]=value;
-      }
-      applyAutoRent(day);
+      const target = ensureDay(currentDate);
+      if (value == null && isManual) { target[field] = null; } else { target[field]=value; }
+      target.updatedAt = new Date().toISOString(); // метка LWW
+      applyAutoRent(target);
       saveAll();
       render();
-      // === ДОБАВЛЕНО: синхронизация смены в облако ===
+      // синхронизация смены в облако
       syncShiftToCloud(currentDate);
     }
   });
 }
 
-function sanitizeMoneyValue(value){
-  return safeMoney(value);
-}
-
-function sanitizeOptionalMoney(value){
-  if (value === null || value === undefined || value === '') return null;
-  return safeMoney(value);
-}
-
-function sanitizePercentValue(value){
-  const num = Number(value);
-  if (!Number.isFinite(num)) return 0;
-  return Math.max(0, Math.round(num * 10) / 10);
-}
+/* ========= Sanitizers 2 ========= */
+function sanitizeMoneyValue(value){ return safeMoney(value); }
+function sanitizeOptionalMoney(value){ if (value === null || value === undefined || value === '') return null; return safeMoney(value); }
+function sanitizePercentValue(value){ const num = Number(value); if (!Number.isFinite(num)) return 0; return Math.max(0, Math.round(num * 10) / 10); }
 
 function attachModalInput(input, getContext){
   if (!input) return;
@@ -755,13 +715,7 @@ function attachModalInput(input, getContext){
 
     input.addEventListener('pointerdown', (ev)=>{
       if (ev.pointerType === 'touch') {
-        touchSession = {
-          id: ev.pointerId,
-          x: ev.clientX,
-          y: ev.clientY,
-          moved: false,
-          triggered: false
-        };
+        touchSession = { id: ev.pointerId, x: ev.clientX, y: ev.clientY, moved: false, triggered: false };
       } else {
         touchSession = null;
       }
@@ -771,44 +725,26 @@ function attachModalInput(input, getContext){
       if (!touchSession || ev.pointerId !== touchSession.id) return;
       const dx = Math.abs(ev.clientX - touchSession.x);
       const dy = Math.abs(ev.clientY - touchSession.y);
-      if (dx > 14 || dy > 14) {
-        touchSession.moved = true;
-      }
+      if (dx > 14 || dy > 14) { touchSession.moved = true; }
     });
 
     input.addEventListener('pointerup', (ev)=>{
       if (ev.pointerType === 'touch') {
-        if (!touchSession || ev.pointerId !== touchSession.id) {
-          touchSession = null;
-          return;
-        }
-        if (!touchSession.moved) {
-          touchSession.triggered = true;
-          triggerModal(ev);
-        }
+        if (!touchSession || ev.pointerId !== touchSession.id) { touchSession = null; return; }
+        if (!touchSession.moved) { touchSession.triggered = true; triggerModal(ev); }
         return;
       }
       triggerModal(ev);
     });
 
-    input.addEventListener('pointercancel', ()=>{
-      touchSession = null;
-    });
+    input.addEventListener('pointercancel', ()=>{ touchSession = null; });
 
     input.addEventListener('click', (ev)=>{
       ev.preventDefault();
       if (touchSession) {
-        if (touchSession.moved) {
-          touchSession = null;
-          return;
-        }
-        if (touchSession.triggered) {
-          touchSession = null;
-          return;
-        }
-        triggerModal(ev);
-        touchSession = null;
-        return;
+        if (touchSession.moved) { touchSession = null; return; }
+        if (touchSession.triggered) { touchSession = null; return; }
+        triggerModal(ev); touchSession = null; return;
       }
       triggerModal(ev);
     });
@@ -838,12 +774,7 @@ function openCarEdit(car){
   carEditName.value=car.name||'';
   if(car.cls){
     let option=[...carEditClass.options].find(opt=>opt.value===car.cls);
-    if(!option){
-      option=document.createElement('option');
-      option.value=car.cls;
-      option.textContent=car.cls;
-      carEditClass.appendChild(option);
-    }
+    if(!option){ option=document.createElement('option'); option.value=car.cls; option.textContent=car.cls; carEditClass.appendChild(option); }
   }
   carEditClass.value=car.cls||'Эконом';
   carEditTank.value=car.tank||50;
@@ -858,14 +789,11 @@ carEditSave.onclick=()=>{
   if(!car) return;
   car.name=carEditName.value||car.name;
   car.cls=carEditClass.value||car.cls;
-  if(carEditTank.value!=='' && carEditTank.value!=null){
-    car.tank=clampTank(carEditTank.value);
-  }
-  if(carEditRent.value!=='' && carEditRent.value!=null){
-    car.rentPerDay=safeMoney(carEditRent.value);
-  }
+  if(carEditTank.value!=='' && carEditTank.value!=null){ car.tank=clampTank(carEditTank.value); }
+  if(carEditRent.value!=='' && carEditRent.value!=null){ car.rentPerDay=safeMoney(carEditRent.value); }
   saveAll();
-  // >>> ДОБАВЛЕНО: синхронизация актуального дня после изменения параметров авто
+  // после изменения параметров авто — зафиксируем updatedAt текущего дня, чтобы LWW учёл локальные изменения логики
+  const d = readDay(currentDate); if (d) { d.updatedAt = new Date().toISOString(); saveAll(); }
   syncShiftToCloud(currentDate);
   closeCarEdit();
   render();
@@ -891,7 +819,6 @@ if (carRentInput) {
     onSave:(value)=>{ carRentInput.value = value; }
   }));
 }
-
 classButtons.querySelectorAll('button').forEach(b=>{
   b.onclick=()=>{
     newCarClass=b.dataset.cls;
@@ -911,15 +838,10 @@ function resetUiInputs(){
   if (fromDateInput) fromDateInput.value='';
   if (toDateInput) toDateInput.value='';
   newCarClass='Эконом';
-  if (classButtons) {
-    classButtons.querySelectorAll('button').forEach(x=>x.classList.remove('primary'));
-  }
+  if (classButtons) classButtons.querySelectorAll('button').forEach(x=>x.classList.remove('primary'));
   if (defaultClassBtn) defaultClassBtn.classList.add('primary');
 }
-
-if (firstLaunchResetPerformed) {
-  resetUiInputs();
-}
+if (firstLaunchResetPerformed) resetUiInputs();
 
 function renderCars(){
   const items = APP.cars.map(c=>`
@@ -938,7 +860,6 @@ function renderCars(){
     b.onclick=()=>{ 
       APP.activeCarId=b.dataset.car; 
       saveAll(); 
-      // >>> ДОБАВЛЕНО: сразу отправляем снимок выбранного дня по новому авто
       syncShiftToCloud(currentDate);
       render(); 
     };
@@ -957,15 +878,15 @@ function renderCars(){
       render();
       showToast('Авто удалено.');
       let demoIds = JSON.parse(localStorage.getItem('taxiDemoCarIds') || '[]');
-demoIds = demoIds.filter(x => x !== id);
-localStorage.setItem('taxiDemoCarIds', JSON.stringify(demoIds));
+      demoIds = demoIds.filter(x => x !== id);
+      localStorage.setItem('taxiDemoCarIds', JSON.stringify(demoIds));
     };
-    
   });
   carsContainer.querySelectorAll('button[data-edit]').forEach(b=>{
     b.onclick=()=>{ const car=APP.cars.find(x=>x.id===b.dataset.edit); if(car) openCarEdit(car); };
   });
 }
+
 addCarBtn.onclick=()=>{
   const name=(carName.value||'').trim();
   if(!name) { showToast('Укажи название авто.'); return; }
@@ -975,12 +896,7 @@ addCarBtn.onclick=()=>{
   APP.cars.push({id,name,cls:newCarClass,tank:clampTank(tankRaw),rentPerDay});
   APP.dataByCar[id]={};
   APP.activeCarId=id;
-  carName.value='';
-  if(carRentInput) carRentInput.value='';
-  if(carTankInput) carTankInput.value='';
-  newCarClass='Эконом';
-  classButtons.querySelectorAll('button').forEach(x=>x.classList.remove('primary'));
-  if(defaultClassBtn) defaultClassBtn.classList.add('primary');
+  resetUiInputs();
   saveAll(); render();
   showToast('Авто добавлено.');
 };
@@ -994,9 +910,7 @@ function performAppReset(options = {}) {
   jumpToLatestDate();
   resetUiInputs();
   render();
-  if (!silent) {
-    showToast('Данные очищены.');
-  }
+  if (!silent) showToast('Данные очищены.');
 }
 
 /* ========= Settings (commission & tax) ========= */
@@ -1038,7 +952,7 @@ function bindSettingsRadios(){
         park[key] = value;
         input.value = display(value);
         saveAll();
-        // >>> ДОБАВЛЕНО: отправляем снимок дня после изменения настроек парка
+        const d = readDay(currentDate); if (d) d.updatedAt = new Date().toISOString();
         syncShiftToCloud(currentDate);
         render();
       }
@@ -1066,10 +980,7 @@ function bindSettingsRadios(){
     quick: [1,3,4,5,7],
     quickLabel: quickLabelPercent,
     sanitize: sanitizePercentValue,
-    parse: (raw)=>{
-      const num = parseFloat(raw);
-      return Number.isFinite(num) ? num : 0;
-    },
+    parse: (raw)=>{ const num = parseFloat(raw); return Number.isFinite(num) ? num : 0; },
     step: 0.1,
     inputMode: 'decimal',
     quickMode: 'add'
@@ -1077,8 +988,9 @@ function bindSettingsRadios(){
 
   document.querySelectorAll('input[name="tax"]').forEach(r=>{
     r.checked = (APP.settings.taxMode===r.value);
-    r.onchange = ()=>{ APP.settings.taxMode=r.value; saveAll(); syncShiftToCloud(currentDate); render(); };
+    r.onchange = ()=>{ APP.settings.taxMode=r.value; saveAll(); const d=readDay(currentDate); if(d) d.updatedAt=new Date().toISOString(); syncShiftToCloud(currentDate); render(); };
   });
+
   const resetBtn = document.getElementById('resetBtn');
   if (resetBtn) {
     resetBtn.onclick = async () => {
@@ -1101,21 +1013,19 @@ function bindSettingsRadios(){
       render();
       showToast('Демо-режим активирован.');
       // помечаем активную демо-машину, чтобы её не синкать в облако
-(function markDemoCar(){
-  try {
-    const id = APP.activeCarId;
-    if (!id) return;
-    const list = JSON.parse(localStorage.getItem('taxiDemoCarIds') || '[]');
-    if (!list.includes(id)) {
-      list.push(id);
-      localStorage.setItem('taxiDemoCarIds', JSON.stringify(list));
-    }
-  } catch {}
-})();
-
+      (function markDemoCar(){
+        try {
+          const id = APP.activeCarId;
+          if (!id) return;
+          const list = JSON.parse(localStorage.getItem('taxiDemoCarIds') || '[]');
+          if (!list.includes(id)) {
+            list.push(id);
+            localStorage.setItem('taxiDemoCarIds', JSON.stringify(list));
+          }
+        } catch {}
+      })();
     };
   }
-
 }
 
 /* ========= Calculations ========= */
@@ -1150,11 +1060,9 @@ function calcCommission(d){ // парк
   const park = settings.park || {};
   const mode = park.mode || 'none';
   if(mode==='none') return 0;
-  if(mode==='day'){
-    return hasFeeActivity(d) ? park.dayFee : 0;
-  }
+  if(mode==='day'){ return hasFeeActivity(d) ? park.dayFee : 0; }
   if(mode==='order'){ return (d.orders||0) * park.orderFee; }
-  if(mode==='percent'){ return (d.income||0) * (park.percent/100); } // с дохода
+  if(mode==='percent'){ return (d.income||0) * (park.percent/100); }
   return 0;
 }
 function calcTax(d){
@@ -1207,46 +1115,34 @@ function sumRange(arr){
   if (dirty) saveAll();
   return summary;
 }
-
 function jumpToLatestDate() {
   const carId = APP.activeCarId;
-  if (!carId) {
-    currentDate = todayISO();
-    return;
-  }
+  if (!carId) { currentDate = todayISO(); return; }
   const data = APP.dataByCar[carId] || {};
   const dates = Object.keys(data).sort();
-  if (dates.length) {
-    currentDate = dates[dates.length - 1];
-  } else {
-    currentDate = todayISO();
-  }
+  currentDate = dates.length ? dates[dates.length - 1] : todayISO();
 }
 
-/* ========= Отправка смены в облако (с офлайн-очередью) ========= */
+/* ========= Cloud sync: push single day ========= */
 async function syncShiftToCloud(dateISO) {
   const tg = window.Telegram?.WebApp;
-  if (!tg?.initData) return;                 // Только в Mini App
+  if (!tg?.initData) return;        // Только в Mini App
   const userId = localStorage.getItem('userId');
   if (!userId) return;
 
   const car = APP.cars.find(c => c.id === APP.activeCarId);
   if (!car) return;
-  // Пропускаем синк для демо-машин
-try {
-  const demoIds = JSON.parse(localStorage.getItem('taxiDemoCarIds') || '[]');
-  if (demoIds.includes(car.id)) return;
-} catch {}
 
+  // пропускаем демо-машины
+  try {
+    const demoIds = JSON.parse(localStorage.getItem('taxiDemoCarIds') || '[]');
+    if (demoIds.includes(car.id)) return;
+  } catch {}
 
-  // --- ДОБАВЛЕНО: существует ли локальная запись дня
   const dayStore = APP.dataByCar?.[car.id] || {};
   const dayExists = !!dayStore[dateISO];
-
-  // Собираем текущие данные дня
   const d = calcDay(dateISO);
 
-  // --- ДОБАВЛЕНО: пропуск пустых дней, если они ещё не создавались локально
   const hasActivity =
     Number(d.income||0) > 0 ||
     Number(d.orders||0) > 0 ||
@@ -1259,10 +1155,7 @@ try {
     d.commissionManual != null ||
     d.taxManual != null;
 
-  if (!dayExists && !hasActivity) {
-    // ничего не отправляем, чтобы не плодить пустые документы
-    return;
-  }
+  if (!dayExists && !hasActivity) return;
 
   const payload = {
     orders: Number(d.orders || 0),
@@ -1298,17 +1191,78 @@ try {
     });
     const data = await res.json();
     console.log('☁️ save shift', res.status, data);
-
     if (!res.ok || !data?.ok) {
       enqueue(body);
+    } else {
+      // серверная метка — обновим локальную
+      const store = APP.dataByCar?.[car.id];
+      if (store && store[dateISO]) {
+        store[dateISO].updatedAt = (data.row?.updatedAt) ? new Date(data.row.updatedAt).toISOString() : new Date().toISOString();
+        saveAll();
+      }
     }
   } catch (e) {
     enqueue(body);
   }
 }
-/* ========= /конец блока ========= */
 
+/* ========= Cloud sync: pull incremental (LWW) ========= */
+async function pullFromCloudSince(initData){
+  try {
+    const meta = loadCloudMeta();
+    const since = meta.lastSyncAt ? `&updatedSince=${encodeURIComponent(meta.lastSyncAt)}` : '';
+    const url = `${API_BASE}/api/shifts?${since}`;
+    const res = await fetch(url, {
+      headers: { 'X-Telegram-Init-Data': initData }
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data?.ok || !Array.isArray(data.rows)) return;
 
+    let applied = 0;
+    for (const row of data.rows) {
+      const carId = row.carId;
+      const date = row.date;
+      const serverUpdated = new Date(row.updatedAt || row._updatedAt || Date.now()).toISOString();
+
+      if (!APP.dataByCar[carId]) APP.dataByCar[carId] = {};
+      const local = APP.dataByCar[carId][date];
+
+      const serverPayload = row.payload || {};
+      const serverEntry = normalizeDayEntry(serverPayload, {
+        park: APP.settings.park,
+        taxMode: APP.settings.taxMode,
+        rentPerDay: 0
+      });
+      serverEntry.settings = serverPayload.settings || serverEntry.settings;
+      serverEntry.updatedAt = serverUpdated;
+
+      // LWW: если локальной нет — принять; если есть — сравнить updatedAt
+      if (!local) {
+        APP.dataByCar[carId][date] = serverEntry;
+        applied++;
+      } else {
+        const localUpdated = new Date(local.updatedAt || 0).toISOString();
+        if (serverUpdated > localUpdated) {
+          APP.dataByCar[carId][date] = { ...local, ...serverEntry };
+          applied++;
+        }
+      }
+    }
+
+    if (applied) {
+      saveAll();
+      render();
+      console.log(`⬇️ cloud pull applied ${applied} changes`);
+    }
+
+    // фиксируем момент последней успешной синхры
+    meta.lastSyncAt = new Date().toISOString();
+    saveCloudMeta(meta);
+  } catch (e) {
+    console.warn('pullFromCloudSince error', e);
+  }
+}
 
 /* ========= Timeline chart ========= */
 function renderTimeline(values, labels, dates){
@@ -1326,7 +1280,6 @@ function renderTimeline(values, labels, dates){
     bar.style.height = `${(Math.max(0,v)/max)*170}px`;
     bar.style.cursor = 'pointer';
 
-    // === обработка кликов по столбцам ===
     bar.onclick = () => {
       if (currentPeriod === 'day') {
         currentDate = dates[i];
@@ -1335,16 +1288,13 @@ function renderTimeline(values, labels, dates){
         document.querySelector('.tab[data-period="day"]').classList.add('active');
         dateInput.value = currentDate;
         render();
-      } 
-      else if (currentPeriod === 'week') {
+      } else if (currentPeriod === 'week') {
         const endISO = dates[i];
         const range = rangeDays(endISO, 7);
         const summary = sumRange(range);
         showReportModal('Неделя', range[0], range[6], summary);
-      } 
-      else if (currentPeriod === 'month') {
+      } else if (currentPeriod === 'month') {
         const endISO = dates[i];
-        const startISO = addDays(endISO, -29);
         const range = rangeDays(endISO, 30);
         const summary = sumRange(range);
         showReportModal('Месяц', range[0], range[range.length-1], summary);
@@ -1361,6 +1311,7 @@ function renderTimeline(values, labels, dates){
     chartBars.appendChild(col);
   });
 }
+
 function showReportModal(title, fromISO, toISO, s){
   const gross = s.income + s.tips + s.otherIncome;
   const profit = gross - (s.rent + s.fuel + s.otherExpense + s.fines + s.commission + s.tax);
@@ -1411,7 +1362,6 @@ function renderHome(){
     ? `Главная · ${d.toLocaleDateString('ru-RU')}`
     : (currentPeriod==='week' ? 'Главная · недели' : 'Главная · месяцы');
 
-  // ====== ДЕНЬ ======
   if(currentPeriod==='day'){
     const x = calcDay(currentDate);
     sumTotal.textContent = rub(x.gross);
@@ -1449,184 +1399,140 @@ function renderHome(){
     renderTimeline(vals, labels, arr);
     setTimeout(() => {
       const bars = chartBars.querySelectorAll('.bar');
-      arr.forEach((iso, i) => {
-        if (iso === currentDate) bars[i].style.outline = '2px solid var(--accent)';
-      });
+      arr.forEach((iso, i) => { if (iso === currentDate) bars[i].style.outline = '2px solid var(--accent)'; });
     }, 50);
-
     return;
   }
 
- // ====== НЕДЕЛЯ ======
-if (currentPeriod === 'week') {
-  const weeks = 8; // последние 8 календарных недель, включая текущую
-  const arr = [];
-  const today = new Date();
+  // НЕДЕЛЯ
+  if (currentPeriod === 'week') {
+    const weeks = 8;
+    const arr = [];
+    const today = new Date();
 
-  const currentMonday = new Date(today);
-  const day = currentMonday.getDay() || 7; // 1=пн, 7=вс
-  if (day !== 1) currentMonday.setDate(currentMonday.getDate() - (day - 1));
+    const currentMonday = new Date(today);
+    const day = currentMonday.getDay() || 7;
+    if (day !== 1) currentMonday.setDate(currentMonday.getDate() - (day - 1));
 
-  for (let i = weeks - 1; i >= 0; i--) {
-    const start = new Date(currentMonday);
-    start.setDate(currentMonday.getDate() - i * 7);
+    for (let i = weeks - 1; i >= 0; i--) {
+      const start = new Date(currentMonday);
+      start.setDate(currentMonday.getDate() - i * 7);
+      const end = new Date(start);
+      end.setDate(start.getDate() + 6);
 
-    const end = new Date(start);
-    end.setDate(start.getDate() + 6);
+      const startISO = start.toLocaleDateString('en-CA');
+      const endISO = end.toLocaleDateString('en-CA');
 
-    const startISO = start.toLocaleDateString('en-CA');
-    const endISO = end.toLocaleDateString('en-CA');
+      const range = [];
+      let cur = new Date(start);
+      while (cur <= end) { range.push(cur.toLocaleDateString('en-CA')); cur.setDate(cur.getDate() + 1); }
 
-    const range = [];
-    let cur = new Date(start);
-    while (cur <= end) {
-      range.push(cur.toLocaleDateString('en-CA'));
-      cur.setDate(cur.getDate() + 1);
+      const sum = sumRange(range);
+      const gross = sum.income + sum.tips + sum.otherIncome;
+      const profit = gross - (sum.rent + sum.fuel + sum.otherExpense + sum.fines + sum.commission + sum.tax);
+
+      arr.push({
+        label: `${start.toLocaleDateString('ru-RU',{day:'2-digit',month:'2-digit'})}–${end.toLocaleDateString('ru-RU',{day:'2-digit',month:'2-digit'})}`,
+        startISO,
+        endISO,
+        profit,
+      });
     }
 
-    const sum = sumRange(range);
-    const gross = sum.income + sum.tips + sum.otherIncome;
-    const profit =
-      gross -
-      (sum.rent +
-        sum.fuel +
-        sum.otherExpense +
-        sum.fines +
-        sum.commission +
-        sum.tax);
+    const vals = arr.map((w) => Math.max(0, w.profit));
+    const labels = arr.map((w) => w.label);
+    const dates = arr.map((w) => w.endISO);
+    renderTimeline(vals, labels, dates);
 
-    arr.push({
-      label: `${start.toLocaleDateString('ru-RU', {
-        day: '2-digit',
-        month: '2-digit',
-      })}–${end.toLocaleDateString('ru-RU', {
-        day: '2-digit',
-        month: '2-digit',
-      })}`,
-      startISO,
-      endISO,
-      profit,
-    });
+    const startThisWeek = currentMonday.toLocaleDateString('en-CA');
+    const endThisWeek = new Date(currentMonday); endThisWeek.setDate(currentMonday.getDate() + 6);
+    const rangeThisWeek = [];
+    let cur = new Date(currentMonday);
+    while (cur <= endThisWeek) { rangeThisWeek.push(cur.toLocaleDateString('en-CA')); cur.setDate(cur.getDate() + 1); }
+
+    const s = sumRange(rangeThisWeek);
+    const gross = s.income + s.tips + s.otherIncome;
+    const profit = gross - (s.rent + s.fuel + s.otherExpense + s.fines + s.commission + s.tax);
+    const eff = gross > 0 ? Math.round((profit / gross) * 100) : 0;
+    const perHour = (s.hours || 0) > 0 ? profit / s.hours : 0;
+
+    sumTotal.textContent = rub(gross);
+    ordersLine.textContent = `${fmt(s.orders)} заказов`;
+    cIncome.textContent = rub(s.income);
+    cTips.textContent = rub(s.tips);
+    cOtherIncome.textContent = rub(s.otherIncome);
+    cOrders.textContent = fmt(s.orders);
+    cRent.textContent = rub(s.rent);
+    cFuel.textContent = rub(s.fuel);
+    cOtherExpense.textContent = rub(s.otherExpense);
+    cFines.textContent = rub(s.fines);
+    cCommission.textContent = rub(s.commission);
+    cTax.textContent = rub(s.tax);
+    cProfit.textContent = rub(profit);
+    cEff.textContent = `${eff}%`;
+    cHours.textContent = `${fmt(s.hours || 0)} ч`;
+    cPerHour.textContent = `${fmt(Math.round(perHour))} ₽/ч`;
   }
 
-  const vals = arr.map((w) => Math.max(0, w.profit));
-  const labels = arr.map((w) => w.label);
-  const dates = arr.map((w) => w.endISO);
-  renderTimeline(vals, labels, dates);
+  // МЕСЯЦ
+  if(currentPeriod==='month'){
+    const months = 6;
+    const arr = [];
+    const now = new Date();
 
-  const startThisWeek = currentMonday.toLocaleDateString('en-CA');
-  const endThisWeek = new Date(currentMonday);
-  endThisWeek.setDate(currentMonday.getDate() + 6);
+    for(let i = months - 1; i >= 0; i--){
+      const year = now.getFullYear();
+      const month = now.getMonth() - i;
+      const start = new Date(year, month, 1);
+      const end = new Date(year, month + 1, 0);
+      const startISO = start.toLocaleDateString('en-CA');
+      const endISO = end.toLocaleDateString('en-CA');
 
-  const rangeThisWeek = [];
-  let cur = new Date(currentMonday);
-  while (cur <= endThisWeek) {
-    rangeThisWeek.push(cur.toLocaleDateString('en-CA'));
-    cur.setDate(cur.getDate() + 1);
-  }
+      const range = [];
+      let cur = new Date(start);
+      while(cur <= end){ range.push(cur.toLocaleDateString('en-CA')); cur.setDate(cur.getDate() + 1); }
 
-  const s = sumRange(rangeThisWeek);
-  const gross = s.income + s.tips + s.otherIncome;
-  const profit =
-    gross -
-    (s.rent +
-      s.fuel +
-      s.otherExpense +
-      s.fines +
-      s.commission +
-      s.tax);
-  const eff = gross > 0 ? Math.round((profit / gross) * 100) : 0;
-  const perHour = (s.hours || 0) > 0 ? profit / s.hours : 0;
+      const sum = sumRange(range);
+      const gross = sum.income + sum.tips + sum.otherIncome;
+      const profit = gross - (sum.rent + sum.fuel + sum.otherExpense + sum.fines + sum.commission + sum.tax);
 
-  sumTotal.textContent = rub(gross);
-  ordersLine.textContent = `${fmt(s.orders)} заказов`;
-  cIncome.textContent = rub(s.income);
-  cTips.textContent = rub(s.tips);
-  cOtherIncome.textContent = rub(s.otherIncome);
-  cOrders.textContent = fmt(s.orders);
-  cRent.textContent = rub(s.rent);
-  cFuel.textContent = rub(s.fuel);
-  cOtherExpense.textContent = rub(s.otherExpense);
-  cFines.textContent = rub(s.fines);
-  cCommission.textContent = rub(s.commission);
-  cTax.textContent = rub(s.tax);
-  cProfit.textContent = rub(profit);
-  cEff.textContent = `${eff}%`;
-  cHours.textContent = `${fmt(s.hours || 0)} ч`;
-  cPerHour.textContent = `${fmt(Math.round(perHour))} ₽/ч`;
-}
-
-// ====== МЕСЯЦ ======
-if(currentPeriod==='month'){
-  const months = 6; // последние 6 календарных месяцев, включая текущий
-  const arr = [];
-  const now = new Date();
-
-  for(let i = months - 1; i >= 0; i--){
-    const year = now.getFullYear();
-    const month = now.getMonth() - i;
-    const start = new Date(year, month, 1);
-    const end = new Date(year, month + 1, 0);
-    const startISO = start.toLocaleDateString('en-CA');
-    const endISO = end.toLocaleDateString('en-CA');
-
-    const range = [];
-    let cur = new Date(start);
-    while(cur <= end){
-      range.push(cur.toLocaleDateString('en-CA'));
-      cur.setDate(cur.getDate() + 1);
+      arr.push({ label: start.toLocaleString('ru-RU',{month:'short'}), startISO, endISO, profit });
     }
 
-    const sum = sumRange(range);
-    const gross = sum.income + sum.tips + sum.otherIncome;
-    const profit = gross - (sum.rent + sum.fuel + sum.otherExpense + sum.fines + sum.commission + sum.tax);
+    const vals = arr.map(m => Math.max(0, m.profit));
+    const labels = arr.map(m => m.label);
+    const dates = arr.map(m => m.endISO);
+    renderTimeline(vals, labels, dates);
 
-    arr.push({
-      label: start.toLocaleString('ru-RU',{month:'short'}),
-      startISO,
-      endISO,
-      profit
-    });
+    const startThisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const endThisMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    const rangeThisMonth = [];
+    let cur = new Date(startThisMonth);
+    while(cur <= endThisMonth){ rangeThisMonth.push(cur.toLocaleDateString('en-CA')); cur.setDate(cur.getDate() + 1); }
+
+    const s = sumRange(rangeThisMonth);
+    const gross = s.income + s.tips + s.otherIncome;
+    const profit = gross - (s.rent + s.fuel + s.otherExpense + s.fines + s.commission + s.tax);
+    const eff = gross>0 ? Math.round((profit/gross)*100) : 0;
+    const perHour = (s.hours||0)>0 ? profit / s.hours : 0;
+
+    sumTotal.textContent=rub(gross);
+    ordersLine.textContent=`${fmt(s.orders)} заказов`;
+    cIncome.textContent=rub(s.income);
+    cTips.textContent=rub(s.tips);
+    cOtherIncome.textContent=rub(s.otherIncome);
+    cOrders.textContent=fmt(s.orders);
+    cRent.textContent=rub(s.rent);
+    cFuel.textContent=rub(s.fuel);
+    cOtherExpense.textContent=rub(s.otherExpense);
+    cFines.textContent=rub(s.fines);
+    cCommission.textContent=rub(s.commission);
+    cTax.textContent=rub(s.tax);
+    cProfit.textContent=rub(profit);
+    cEff.textContent=`${eff}%`;
+    cHours.textContent=`${fmt(s.hours||0)} ч`;
+    cPerHour.textContent=`${fmt(Math.round(perHour))} ₽/ч`;
   }
-
-  const vals = arr.map(m => Math.max(0, m.profit));
-  const labels = arr.map(m => m.label);
-  const dates = arr.map(m => m.endISO);
-  renderTimeline(vals, labels, dates);
-
-  const startThisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-  const endThisMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-  const rangeThisMonth = [];
-  let cur = new Date(startThisMonth);
-  while(cur <= endThisMonth){
-    rangeThisMonth.push(cur.toLocaleDateString('en-CA'));
-    cur.setDate(cur.getDate() + 1);
-  }
-
-  const s = sumRange(rangeThisMonth);
-  const gross = s.income + s.tips + s.otherIncome;
-  const profit = gross - (s.rent + s.fuel + s.otherExpense + s.fines + s.commission + s.tax);
-  const eff = gross>0 ? Math.round((profit/gross)*100) : 0;
-  const perHour = (s.hours||0)>0 ? profit / s.hours : 0;
-
-  sumTotal.textContent=rub(gross);
-  ordersLine.textContent=`${fmt(s.orders)} заказов`;
-  cIncome.textContent=rub(s.income);
-  cTips.textContent=rub(s.tips);
-  cOtherIncome.textContent=rub(s.otherIncome);
-  cOrders.textContent=fmt(s.orders);
-  cRent.textContent=rub(s.rent);
-  cFuel.textContent=rub(s.fuel);
-  cOtherExpense.textContent=rub(s.otherExpense);
-  cFines.textContent=rub(s.fines);
-  cCommission.textContent=rub(s.commission);
-  cTax.textContent=rub(s.tax);
-  cProfit.textContent=rub(profit);
-  cEff.textContent=`${eff}%`;
-  cHours.textContent=`${fmt(s.hours||0)} ч`;
-  cPerHour.textContent=`${fmt(Math.round(perHour))} ₽/ч`;
-}
-
 }
 
 /* ===== Reports ===== */
@@ -1698,7 +1604,6 @@ function renderReports(){
   const days = rMode==='week'?7:30;
   const arr = rangeDays(todayISO(), days);
   const s = sumRange(arr);
-
   reportsBody.innerHTML = buildSummaryCard(rMode==='week'?'Неделя (последние 7 дней)':'Месяц (последние 30 дней)', s);
 }
 
@@ -1733,7 +1638,8 @@ navbtns.forEach(n=>n.addEventListener('click',()=>{
 dateInput.addEventListener('change', (e)=>{
   currentDate = e.target.value || todayISO();
   if (APP.activeCarId) {
-    ensureDay(currentDate);
+    const d = ensureDay(currentDate);
+    if (d) d.updatedAt = new Date().toISOString();
     saveAll();
     syncShiftToCloud(currentDate);
   }
@@ -1772,8 +1678,7 @@ rTabs.forEach(rt=>rt.addEventListener('click',()=>{
   render();
 }));
 
-/* ========= First render ========= */
- // ===== Отчёт по диапазону =====
+/* ========= Диапазонный отчёт ========= */
 if (rangeBtn) {
   rangeBtn.onclick = () => {
     const from = fromDateInput ? fromDateInput.value : '';
@@ -1784,10 +1689,7 @@ if (rangeBtn) {
     const arr = [];
     let cur = new Date(from);
     const end = new Date(to);
-    while (cur <= end) {
-      arr.push(cur.toLocaleDateString('en-CA'));
-      cur.setDate(cur.getDate() + 1);
-    }
+    while (cur <= end) { arr.push(cur.toLocaleDateString('en-CA')); cur.setDate(cur.getDate() + 1); }
 
     const s = sumRange(arr);
     reportsBody.innerHTML = `
@@ -1799,10 +1701,10 @@ if (rangeBtn) {
   };
 }
 
- // Первый рендер
- render();
+/* ========= Первый рендер ========= */
+render();
 
-// ==== Телеграм-специфика и защита от свайпов ====
+/* ==== Телеграм-специфика и защита от свайпов ==== */
 (function initTelegram() {
   const enforceExpand = () => {
     try { Telegram.WebApp.expand(); } catch (e) {}
@@ -1811,8 +1713,6 @@ if (rangeBtn) {
   try {
     if (window.Telegram && Telegram.WebApp) {
       Telegram.WebApp.ready();
-
-     
       enforceExpand();
 
       if (Telegram.WebApp.disableVerticalSwipes) {
@@ -1844,6 +1744,5 @@ if (rangeBtn) {
   }
 })();
 
-// Встроенный контейнер `.content` получает собственный скролл, поэтому
-// дополнительных обработчиков касаний не требуется: Telegram не получает
-// overscroll, а пользователи сохраняют нативные жесты.
+// Встроенный контейнер `.content` получает собственный скролл —
+// Telegram не перехватывает overscroll, жесты остаются нативными.
