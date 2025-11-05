@@ -36,6 +36,86 @@ function enqueue(item) {
 const CLOUD_META_KEY = 'taxiCloudMetaV1'; // { lastSyncAt: ISO }
 function loadCloudMeta() { try { return JSON.parse(localStorage.getItem(CLOUD_META_KEY) || '{}'); } catch { return {}; } }
 function saveCloudMeta(meta) { localStorage.setItem(CLOUD_META_KEY, JSON.stringify(meta || {})); }
+/* ========= Cloud → hydrate defaults (cars + settings) ========= */
+function ensureCarMetaFromCloud(carId, carName, carClass, rentPerDay) {
+  if (!carId) return;
+  if (!Array.isArray(APP.cars)) APP.cars = [];
+
+  let car = APP.cars.find(c => c.id === carId);
+  if (!car) {
+    car = {
+      id: carId,
+      name: carName || 'Без названия',
+      cls:  carClass || 'Эконом',
+      tank: 50,
+      rentPerDay: sanitizeRentPerDay(rentPerDay, 0),
+    };
+    APP.cars.push(car);
+    if (!APP.activeCarId) APP.activeCarId = carId;
+  } else {
+    // обновляем метаданные, если пришли с сервера
+    if (carName && carName !== car.name) car.name = carName;
+    if (carClass && carClass !== car.cls) car.cls = carClass;
+    if (rentPerDay != null) {
+      const v = sanitizeRentPerDay(rentPerDay, car.rentPerDay || 0);
+      if (v !== car.rentPerDay) car.rentPerDay = v;
+    }
+  }
+}
+
+/** Берём самые «свежие» (по updatedAt) снапшоты настроек из рядов и:
+ *  - обновляем APP.settings.park / APP.settings.taxMode (по глобально самому свежему ряду)
+ *  - обновляем rentPerDay у каждой машины (по самому свежему ряду этой машины)
+ *  - создаём машину, если её ещё нет локально
+ */
+function hydrateDefaultsFromCloud(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return;
+
+  // 1) по всем рядам — выдержим самую свежую запись ГЛОБАЛЬНО для глобальных настроек
+  let latestGlobal = null;
+
+  // 2) по машинам — самая свежая запись с settings для rentPerDay и метаданных
+  const latestByCar = new Map();
+
+  for (const r of rows) {
+    const updated = new Date(r.updatedAt || r._updatedAt || 0).toISOString();
+    const payload = r.payload || {};
+    const snap = payload.settings || null;
+
+    // для глобального снимка — просто максимальная updatedAt
+    if (!latestGlobal || updated > latestGlobal.updated) {
+      latestGlobal = { updated, snap };
+    }
+
+    // по машинам: берём самый свежий снапшот для carId
+    if (r.carId) {
+      const prev = latestByCar.get(r.carId);
+      if (!prev || updated > prev.updated) {
+        latestByCar.set(r.carId, {
+          updated,
+          snap,
+          carId: r.carId,
+          carName: r.carName || null,
+          carClass: r.carClass || null
+        });
+      }
+    }
+  }
+
+  // 2a) прогидрировать машины (метаданные + rentPerDay)
+  for (const entry of latestByCar.values()) {
+    const rentPerDay = entry.snap ? sanitizeRentPerDay(entry.snap.rentPerDay, 0) : undefined;
+    ensureCarMetaFromCloud(entry.carId, entry.carName, entry.carClass, rentPerDay);
+  }
+
+  // 1a) обновить глобальные настройки если снап есть
+  if (latestGlobal && latestGlobal.snap) {
+    const s = latestGlobal.snap;
+    if (s.park) APP.settings.park = sanitizeParkConfig(s.park, APP.settings.park);
+    if (s.taxMode != null) APP.settings.taxMode = sanitizeTaxMode(s.taxMode);
+  }
+}
+
 
 /* ========= Telegram detection + auth (robust) ========= */
 async function flushCloudQueue(initData) {
@@ -1219,75 +1299,60 @@ async function pullFromCloudSince(initData){
     const data = await res.json();
     if (!data?.ok || !Array.isArray(data.rows)) return;
 
-    // хелпер: найти машину, при необходимости создать по данным с сервера
-    const ensureCarFromServerRow = (row) => {
-      const carId = row.carId;
-      if (!carId) return null;
-      let car = APP.cars.find(c => c.id === carId);
-      if (!car) {
-        car = {
-          id: carId,
-          name: row.carName || 'Импортировано',
-          cls: row.carClass || 'Эконом',
-          tank: 50,
-          rentPerDay: 0
-        };
-        APP.cars.push(car);
-        if (!APP.activeCarId) APP.activeCarId = car.id;
-      } else {
-        // мягко обновим имя/класс, если на сервере есть что-то полезное
-        if (!car.name && row.carName) car.name = row.carName;
-        if ((!car.cls || car.cls === 'Эконом') && row.carClass) car.cls = row.carClass;
-      }
-      if (!APP.dataByCar[carId]) APP.dataByCar[carId] = {};
-      return car;
-    };
-
     let applied = 0;
-    let carsTouched = 0;
+    const pulledRows = data.rows;
 
-    for (const row of data.rows) {
+    for (const row of pulledRows) {
       const carId = row.carId;
       const date = row.date;
       const serverUpdated = new Date(row.updatedAt || row._updatedAt || Date.now()).toISOString();
 
-      // гарантируем наличие машины в APP.cars
-      const beforeLen = APP.cars.length;
-      ensureCarFromServerRow(row);
-      if (APP.cars.length > beforeLen) carsTouched++;
+      // 0) гарантируем наличие контейнера для машины
+      if (!APP.dataByCar[carId]) APP.dataByCar[carId] = {};
 
-      const localStore = APP.dataByCar[carId] || (APP.dataByCar[carId] = {});
-      const local = localStore[date];
+      // 0.1) сразу создаём/обновим машину по метаданным (имя/класс/аренда подтянется позже при гидрации)
+      ensureCarMetaFromCloud(carId, row.carName, row.carClass, undefined);
 
+      const local = APP.dataByCar[carId][date];
+
+      // нормализуем серверную запись дня
       const serverPayload = row.payload || {};
       const serverEntry = normalizeDayEntry(serverPayload, {
         park: APP.settings.park,
         taxMode: APP.settings.taxMode,
         rentPerDay: 0
       });
+      // сохраняем именно серверные настройки (если есть) и updatedAt сервера
       serverEntry.settings = serverPayload.settings || serverEntry.settings;
       serverEntry.updatedAt = serverUpdated;
 
-      // LWW: принимаем более свежую запись
+      // LWW: если локальной нет — принять; если есть — сравнить updatedAt
       if (!local) {
-        localStore[date] = serverEntry;
+        APP.dataByCar[carId][date] = serverEntry;
         applied++;
       } else {
         const localUpdated = new Date(local.updatedAt || 0).toISOString();
         if (serverUpdated > localUpdated) {
-          localStore[date] = { ...local, ...serverEntry };
+          APP.dataByCar[carId][date] = { ...local, ...serverEntry };
           applied++;
         }
       }
     }
 
-    if (applied || carsTouched) {
+    // Важное: прогидрировать дефолты (APP.settings и APP.cars[].rentPerDay + name/class)
+    hydrateDefaultsFromCloud(pulledRows);
+
+    if (applied) {
       saveAll();
       render();
-      console.log(`⬇️ cloud pull applied ${applied} changes; cars added/updated: ${carsTouched}`);
+      console.log(`⬇️ cloud pull applied ${applied} changes`);
+    } else {
+      // даже если LWW не применил дни, гидрация могла обновить метаданные/настройки
+      saveAll();
+      render();
     }
 
-    // отмечаем момент успешной синхры в UTC
+    // фиксируем момент последней успешной синхры
     meta.lastSyncAt = new Date().toISOString();
     saveCloudMeta(meta);
   } catch (e) {
