@@ -1158,12 +1158,15 @@ function jumpToLatestDate() {
   }
 }
 
-/* ========= ДОБАВЛЕНО: отправка смены в облако ========= */
+/* ========= ДОБАВЛЕНО: отправка смены в облако (версия с carId) ========= */
 async function syncShiftToCloud(dateISO) {
   const tg = window.Telegram?.WebApp;
   if (!tg?.initData) return; // Только внутри Telegram Mini App
   const userId = localStorage.getItem('userId');
   if (!userId) return;
+
+  const carId = APP?.activeCarId; // <-- важно для нескольких авто
+  if (!carId) return;
 
   // Собираем актуальные данные дня (как сейчас считает UI)
   const d = calcDay(dateISO);
@@ -1189,7 +1192,7 @@ async function syncShiftToCloud(dateISO) {
         'Content-Type': 'application/json',
         'X-Telegram-Init-Data': tg.initData
       },
-      body: JSON.stringify({ date: dateISO, payload })
+      body: JSON.stringify({ carId, date: dateISO, payload }) // <-- ПЕРЕДАЁМ carId
     });
     const data = await res.json();
     console.log('☁️ save shift', res.status, data);
@@ -1198,6 +1201,7 @@ async function syncShiftToCloud(dateISO) {
   }
 }
 /* ========= /конец блока ========= */
+
 
 
 /* ========= Timeline chart ========= */
