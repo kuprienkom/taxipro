@@ -1216,8 +1216,31 @@ async function syncShiftToCloud(dateISO) {
   const car = APP.cars.find(c => c.id === APP.activeCarId);
   if (!car) return;
 
+  // --- ДОБАВЛЕНО: существует ли локальная запись дня
+  const dayStore = APP.dataByCar?.[car.id] || {};
+  const dayExists = !!dayStore[dateISO];
+
   // Собираем текущие данные дня
   const d = calcDay(dateISO);
+
+  // --- ДОБАВЛЕНО: пропуск пустых дней, если они ещё не создавались локально
+  const hasActivity =
+    Number(d.income||0) > 0 ||
+    Number(d.orders||0) > 0 ||
+    Number(d.tips||0) > 0 ||
+    Number(d.otherIncome||0) > 0 ||
+    Number(d.rent||0) > 0 ||
+    Number(d.fuel||0) > 0 ||
+    Number(d.otherExpense||0) > 0 ||
+    Number(d.fines||0) > 0 ||
+    d.commissionManual != null ||
+    d.taxManual != null;
+
+  if (!dayExists && !hasActivity) {
+    // ничего не отправляем, чтобы не плодить пустые документы
+    return;
+  }
+
   const payload = {
     orders: Number(d.orders || 0),
     income: Number(d.income || 0),
@@ -1253,16 +1276,15 @@ async function syncShiftToCloud(dateISO) {
     const data = await res.json();
     console.log('☁️ save shift', res.status, data);
 
-    // если сервер ответил ошибкой — отправим в очередь
     if (!res.ok || !data?.ok) {
       enqueue(body);
     }
   } catch (e) {
-    // сеть/сервер недоступны — кладём в очередь
     enqueue(body);
   }
 }
 /* ========= /конец блока ========= */
+
 
 
 /* ========= Timeline chart ========= */
