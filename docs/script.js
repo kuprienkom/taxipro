@@ -1219,14 +1219,45 @@ async function pullFromCloudSince(initData){
     const data = await res.json();
     if (!data?.ok || !Array.isArray(data.rows)) return;
 
+    // хелпер: найти машину, при необходимости создать по данным с сервера
+    const ensureCarFromServerRow = (row) => {
+      const carId = row.carId;
+      if (!carId) return null;
+      let car = APP.cars.find(c => c.id === carId);
+      if (!car) {
+        car = {
+          id: carId,
+          name: row.carName || 'Импортировано',
+          cls: row.carClass || 'Эконом',
+          tank: 50,
+          rentPerDay: 0
+        };
+        APP.cars.push(car);
+        if (!APP.activeCarId) APP.activeCarId = car.id;
+      } else {
+        // мягко обновим имя/класс, если на сервере есть что-то полезное
+        if (!car.name && row.carName) car.name = row.carName;
+        if ((!car.cls || car.cls === 'Эконом') && row.carClass) car.cls = row.carClass;
+      }
+      if (!APP.dataByCar[carId]) APP.dataByCar[carId] = {};
+      return car;
+    };
+
     let applied = 0;
+    let carsTouched = 0;
+
     for (const row of data.rows) {
       const carId = row.carId;
       const date = row.date;
       const serverUpdated = new Date(row.updatedAt || row._updatedAt || Date.now()).toISOString();
 
-      if (!APP.dataByCar[carId]) APP.dataByCar[carId] = {};
-      const local = APP.dataByCar[carId][date];
+      // гарантируем наличие машины в APP.cars
+      const beforeLen = APP.cars.length;
+      ensureCarFromServerRow(row);
+      if (APP.cars.length > beforeLen) carsTouched++;
+
+      const localStore = APP.dataByCar[carId] || (APP.dataByCar[carId] = {});
+      const local = localStore[date];
 
       const serverPayload = row.payload || {};
       const serverEntry = normalizeDayEntry(serverPayload, {
@@ -1237,32 +1268,33 @@ async function pullFromCloudSince(initData){
       serverEntry.settings = serverPayload.settings || serverEntry.settings;
       serverEntry.updatedAt = serverUpdated;
 
-      // LWW: если локальной нет — принять; если есть — сравнить updatedAt
+      // LWW: принимаем более свежую запись
       if (!local) {
-        APP.dataByCar[carId][date] = serverEntry;
+        localStore[date] = serverEntry;
         applied++;
       } else {
         const localUpdated = new Date(local.updatedAt || 0).toISOString();
         if (serverUpdated > localUpdated) {
-          APP.dataByCar[carId][date] = { ...local, ...serverEntry };
+          localStore[date] = { ...local, ...serverEntry };
           applied++;
         }
       }
     }
 
-    if (applied) {
+    if (applied || carsTouched) {
       saveAll();
       render();
-      console.log(`⬇️ cloud pull applied ${applied} changes`);
+      console.log(`⬇️ cloud pull applied ${applied} changes; cars added/updated: ${carsTouched}`);
     }
 
-    // фиксируем момент последней успешной синхры
+    // отмечаем момент успешной синхры в UTC
     meta.lastSyncAt = new Date().toISOString();
     saveCloudMeta(meta);
   } catch (e) {
     console.warn('pullFromCloudSince error', e);
   }
 }
+
 
 /* ========= Timeline chart ========= */
 function renderTimeline(values, labels, dates){
