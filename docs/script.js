@@ -597,17 +597,17 @@ let modalContext=null;
 let modalOpenedAt=0;
 
 const DAY_QUICK_PRESETS = {
-  income: [1000,3000,5000],
+  income: [2000,5000,10000],
   otherIncome: [500,1000,2000],
-  tips: [50,100,200],
-  rent: [500,1000,2000,3000],
-  fuel: [100,500,1000],
-  otherExpense: [100,300,500],
+  tips: [50,100,200,500],
+  rent: [500,1000,2000],
+  fuel: [500,1000,2000],
+  otherExpense: [100,300,500,1000],
   fines: [500,1000,3000],
-  orders: [1,5,10],
-  hours: [1,2,4],
-  commissionManual: [200,500,1000,1500],
-  taxManual: [200,500,800,1200]
+  orders: [1,5,10,15,20],
+  hours: [1,2,4,8,10],
+  commissionManual: [50,100,150,200],
+  taxManual: [100,200,400,800]
 };
 const DAY_MONEY_FIELDS = new Set(['income','otherIncome','tips','rent','fuel','otherExpense','fines','commissionManual','taxManual']);
 
@@ -898,7 +898,7 @@ if (carRentInput) {
     value: carRentInput.value==='' ? 0 : Number(carRentInput.value),
     min: 0,
     step: 50,
-    quick: [500,1000,2000,3000],
+    quick: [2000,2500,3500],
     quickLabel: quickLabelRub,
     quickMode: 'add',
     sanitize: sanitizeMoneyValue,
@@ -1069,7 +1069,7 @@ function bindSettingsRadios(){
 
   bindParkInput(parkDayInput, 'dayFee', {
     title: 'Фикс за сутки',
-    quick: [150,200,300,500],
+    quick: [50,100,150,200],
     quickLabel: quickLabelRub,
     sanitize: sanitizeMoneyValue,
     step: 10,
