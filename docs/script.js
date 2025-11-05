@@ -4,62 +4,54 @@ const rub = (n) => `${fmt(n)} ₽`;
 const todayISO = () => { const d=new Date();return d.toISOString().slice(0,10); };
 const addDays = (iso,delta)=>{const d=new Date(iso);d.setDate(d.getDate()+delta);return d.toISOString().slice(0,10);}
 const rangeDays=(end,count)=>{const a=[];for(let i=count-1;i>=0;i--)a.push(addDays(end,-i));return a;}
-const isoToShort = (iso)=>{const d=new Date(iso);return d.toLocaleDateString('ru-RU',{day:'2-digit',month:'2-digit'});}
+const isoToShort = (iso)=>{const d=new Date(iso);return d.toLocaleDateString('ru-RU',{day:'2-digit',month:'2-digit'});} 
 
 /* ========= Telegram detection + auth (robust) ========= */
 const API_BASE = 'https://taxipro-api.onrender.com';
 
-
 async function apiPost(path, body) {
-try {
-const r = await fetch(API_BASE + path, {
-method: 'POST',
-headers: { 'Content-Type': 'application/json' },
-body: JSON.stringify(body || {})
-});
-return await r.json();
-} catch (e) { console.warn('[TaxiPro] API error', e); return null; }
+  try {
+    const r = await fetch(API_BASE + path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {})
+    });
+    return await r.json();
+  } catch (e) { console.warn('[TaxiPro] API error', e); return null; }
 }
-
 
 // Ждём появления Telegram.WebApp (до 5 сек) и только потом авторизуемся
 (function waitForTelegramAndAuth() {
-const startedAt = Date.now();
+  const startedAt = Date.now();
 
+  function tryInit() {
+    const tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
 
-function tryInit() {
-const tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
+    if (!tg) {
+      if (Date.now() - startedAt < 5000) {
+        return setTimeout(tryInit, 100); // подождать ещё
+      } else {
+        console.log('[TaxiPro] Telegram.WebApp не найден — страница, вероятно, не в Mini App');
+        return;
+      }
+    }
 
+    try { tg.ready(); tg.expand && tg.expand(); } catch {}
 
-if (!tg) {
-if (Date.now() - startedAt < 5000) {
-return setTimeout(tryInit, 100); // подождать ещё
-} else {
-console.log('[TaxiPro] Telegram.WebApp не найден — страница, вероятно, не в Mini App');
-return;
-}
-}
+    // 1) апсерт пользователя + сохранение userId для облачной синхронизации
+    apiPost('/api/auth/telegram', { initData: tg.initData }).then((r) => {
+      if (r && r.userId) localStorage.setItem('userId', String(r.userId));
+    });
 
+    // 2) хартбит активности
+    setInterval(() => {
+      apiPost('/api/ping', { initData: tg.initData, screen: 'app' });
+    }, 30_000);
+  }
 
-try { tg.ready(); tg.expand && tg.expand(); } catch {}
-
-
-// 1) апсерт пользователя + сохранение userId для облачной синхронизации
-apiPost('/api/auth/telegram', { initData: tg.initData }).then((r) => {
-if (r && r.userId) localStorage.setItem('userId', String(r.userId));
-});
-
-
-// 2) хартбит активности
-setInterval(() => {
-apiPost('/api/ping', { initData: tg.initData, screen: 'app' });
-}, 30_000);
-}
-
-
-// Запускаем сразу и на DOMContentLoaded на всякий случай
-tryInit();
-document.addEventListener('DOMContentLoaded', tryInit, { once: true });
+  // Запускаем сразу и на DOMContentLoaded на всякий случай
+  tryInit();
+  document.addEventListener('DOMContentLoaded', tryInit, { once: true });
 })();
 
 /* ========= Storage schema =========
@@ -829,7 +821,11 @@ carEditSave.onclick=()=>{
   if(carEditRent.value!=='' && carEditRent.value!=null){
     car.rentPerDay=safeMoney(carEditRent.value);
   }
-  saveAll(); closeCarEdit(); render();
+  saveAll();
+  // >>> ДОБАВЛЕНО: синхронизация актуального дня после изменения параметров авто
+  syncShiftToCloud(currentDate);
+  closeCarEdit();
+  render();
 };
 
 /* ========= Cars UI ========= */
@@ -896,7 +892,13 @@ function renderCars(){
   carsContainer.innerHTML = items || '<div class="row">Нет машин — добавь выше</div>';
 
   carsContainer.querySelectorAll('button[data-car]').forEach(b=>{
-    b.onclick=()=>{ APP.activeCarId=b.dataset.car; saveAll(); render(); };
+    b.onclick=()=>{ 
+      APP.activeCarId=b.dataset.car; 
+      saveAll(); 
+      // >>> ДОБАВЛЕНО: сразу отправляем снимок выбранного дня по новому авто
+      syncShiftToCloud(currentDate);
+      render(); 
+    };
   });
   carsContainer.querySelectorAll('button[data-del]').forEach(b=>{
     b.onclick=async ()=>{
@@ -954,7 +956,7 @@ function bindSettingsRadios(){
   const park = APP.settings.park;
   document.querySelectorAll('input[name="park"]').forEach(r=>{
     r.checked = (park.mode===r.value);
-    r.onchange = ()=>{ park.mode=r.value; saveAll(); render(); };
+    r.onchange = ()=>{ park.mode=r.value; saveAll(); syncShiftToCloud(currentDate); render(); };
   });
 
   const bindParkInput = (input, key, options = {}) => {
@@ -988,6 +990,8 @@ function bindSettingsRadios(){
         park[key] = value;
         input.value = display(value);
         saveAll();
+        // >>> ДОБАВЛЕНО: отправляем снимок дня после изменения настроек парка
+        syncShiftToCloud(currentDate);
         render();
       }
     }));
@@ -1025,7 +1029,7 @@ function bindSettingsRadios(){
 
   document.querySelectorAll('input[name="tax"]').forEach(r=>{
     r.checked = (APP.settings.taxMode===r.value);
-    r.onchange = ()=>{ APP.settings.taxMode=r.value; saveAll(); render(); };
+    r.onchange = ()=>{ APP.settings.taxMode=r.value; saveAll(); syncShiftToCloud(currentDate); render(); };
   });
   const resetBtn = document.getElementById('resetBtn');
   if (resetBtn) {
@@ -1089,7 +1093,7 @@ function calcCommission(d){ // парк
     return hasFeeActivity(d) ? park.dayFee : 0;
   }
   if(mode==='order'){ return (d.orders||0) * park.orderFee; }
-  if(mode==='percent'){ return (d.income||0) * (park.percent/100); } // с дохода (без чаевых/прочих доходов)
+  if(mode==='percent'){ return (d.income||0) * (park.percent/100); } // с дохода
   return 0;
 }
 function calcTax(d){
@@ -1201,8 +1205,6 @@ async function syncShiftToCloud(dateISO) {
   }
 }
 /* ========= /конец блока ========= */
-
-
 
 /* ========= Timeline chart ========= */
 function renderTimeline(values, labels, dates){
@@ -1629,6 +1631,7 @@ dateInput.addEventListener('change', (e)=>{
   if (APP.activeCarId) {
     ensureDay(currentDate);
     saveAll();
+    syncShiftToCloud(currentDate);
   }
   tabs.forEach(x=>x.classList.remove('active'));
   document.querySelector('.tab[data-period="day"]').classList.add('active');
