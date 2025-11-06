@@ -8,29 +8,18 @@ const isoToShort = (iso)=>{const d=new Date(iso);return d.toLocaleDateString('ru
 
 /* ========= Telegram + API ========= */
 const API_BASE = 'https://taxipro-api.onrender.com';
-// === SOURCE tracking ===
-const tg = window.Telegram?.WebApp;
-const SOURCE_KEY = 'txp_source';
-try {
-  const sp = tg?.initDataUnsafe?.start_param;
-  if (sp && !localStorage.getItem(SOURCE_KEY)) localStorage.setItem(SOURCE_KEY, sp);
-} catch (_) {}
-const source = localStorage.getItem(SOURCE_KEY) || 'direct';
-
 
 /* ---- Общие POST ---- */
 async function apiPost(path, body) {
   try {
-    const payload = { ...(body || {}), source }; // ⟵ всегда добавляем source
     const r = await fetch(API_BASE + path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(body || {})
     });
     return await r.json();
   } catch (e) { console.warn('[TaxiPro] API error', e); return null; }
 }
-
 
 /* ========= Cloud queue (offline) ========= */
 const QUEUE_KEY = 'taxiCloudQueueV1';
@@ -140,10 +129,7 @@ async function flushCloudQueue(initData) {
         'Content-Type': 'application/json',
         'X-Telegram-Init-Data': initData || (window.Telegram?.WebApp?.initData || '')
       },
-      // добавим source в каждый элемент, если его нет (старые очереди)
-const itemsWithSource = q.map(it => it && it.source ? it : { ...it, source });
-body: JSON.stringify({ items: itemsWithSource, source })
-
+      body: JSON.stringify({ items: q })
     });
     const data = await res.json();
     if (res.ok && data?.ok) {
@@ -175,8 +161,6 @@ body: JSON.stringify({ items: itemsWithSource, source })
 // Ждём появления Telegram.WebApp (до 5 сек) и только потом авторизуемся
 (function waitForTelegramAndAuth() {
   const startedAt = Date.now();
-    let _txpInited = false;
-
 
   function tryInit() {
     const tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
@@ -189,20 +173,8 @@ body: JSON.stringify({ items: itemsWithSource, source })
         return;
       }
     }
-    if (_txpInited) return;
-    _txpInited = true;
+
     try { tg.ready(); tg.expand && tg.expand(); } catch {}
-    // one-shot событие запуска мини-апки
-apiPost('/api/ping', { initData: tg.initData, screen: 'open_app' });
-        // обновим start_param, если он пришёл другой (перезапишем source)
-    try {
-      const sp2 = tg.initDataUnsafe?.start_param;
-      if (sp2 && localStorage.getItem(SOURCE_KEY) !== sp2) {
-        localStorage.setItem(SOURCE_KEY, sp2);
-      }
-    } catch {}
-
-
 
     // 1) апсерт пользователя + сохранение userId для облачной синхронизации
     apiPost('/api/auth/telegram', { initData: tg.initData }).then(async (r) => {
@@ -1323,14 +1295,12 @@ async function syncShiftToCloud(dateISO) {
   };
 
   const body = {
-  carId: car.id,
-  carName: car.name || null,
-  carClass: car.cls || null,
-  date: dateISO,
-  payload,
-  source
-};
-
+    carId: car.id,
+    carName: car.name || null,
+    carClass: car.cls || null,
+    date: dateISO,
+    payload
+  };
 
   try {
     const res = await fetch(API_BASE + '/api/shifts', {
